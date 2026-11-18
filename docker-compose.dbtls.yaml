@@ -1,0 +1,74 @@
+# MongoDB TLS overlay (NF <-> mongod channel protection, FS.28 "Transport
+# Protection (DB)"). Applied ON TOP of docker-compose.encryption.yaml:
+#   docker compose -f docker-compose.yaml -f docker-compose.override.yaml \
+#                  -f docker-compose.encryption.yaml -f docker-compose.dbtls.yaml up -d
+# or via COMPOSE_FILE in .env (already set on the test stand).
+#
+# What it changes:
+#   - mongodb:  mongod-tls.conf (net.tls requireTLS, cert from
+#               .deploy/docker/mongodb-tls/), CA mounted for the in-container
+#               mongo shell, healthcheck switched to --tls
+#   - hss/pcrf/udr/webui/populate: DB_URI with ?tls=true&tlsCAFile=... and the
+#               CA mounted at /etc/mongodb-tls-ca/ca.crt
+#
+# Prerequisite: bash .deploy/scripts/generate-mongodb-tls.sh (one time).
+# Rollback: remove this file from the COMPOSE_FILE chain and `docker compose up -d`
+# (mongod goes back to plaintext listeners; no data migration is needed).
+#
+# NOTE: with requireTLS every DB client (including the published host port
+# 27017) must use TLS. verify-encrypted-stack.sh / import-profiles.sh detect
+# this overlay automatically.
+
+services:
+  mongodb:
+    volumes:
+      # Same target /etc/mongod.conf as the encryption overlay: the last file wins.
+      - .deploy/docker/psmdb/mongod-tls.conf:/etc/mongod.conf:ro
+      # mongod TLS server material (server.pem)
+      - .deploy/docker/mongodb-tls:/etc/mongodb-tls-server:ro
+      # CA for the in-container mongo shell (healthcheck, tools)
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - echo 'db.runCommand("ping").ok' | mongo --tls --tlsCAFile /etc/mongodb-tls-ca/ca.crt 127.0.0.1:27017/test --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  hss:
+    environment:
+      DB_URI: mongodb://mongodb:27017/open5gs?tls=true&tlsCAFile=/etc/mongodb-tls-ca/ca.crt
+    volumes:
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro
+
+  pcrf:
+    environment:
+      DB_URI: mongodb://mongodb:27017/open5gs?tls=true&tlsCAFile=/etc/mongodb-tls-ca/ca.crt
+    volumes:
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro
+  pcf:
+    environment:
+      DB_URI: mongodb://mongodb:27017/open5gs?tls=true&tlsCAFile=/etc/mongodb-tls-ca/ca.crt
+    volumes:
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro
+
+
+  udr:
+    environment:
+      DB_URI: mongodb://mongodb:27017/open5gs?tls=true&tlsCAFile=/etc/mongodb-tls-ca/ca.crt
+    volumes:
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro
+
+  webui:
+    environment:
+      DB_URI: mongodb://mongodb:27017/open5gs?tls=true&tlsCAFile=/etc/mongodb-tls-ca/ca.crt
+    volumes:
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro
+
+  populate:
+    environment:
+      DB_URI: mongodb://mongodb:27017/open5gs?tls=true&tlsCAFile=/etc/mongodb-tls-ca/ca.crt
+    volumes:
+      - .deploy/docker/mongodb-tls/ca.crt:/etc/mongodb-tls-ca/ca.crt:ro

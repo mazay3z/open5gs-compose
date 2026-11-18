@@ -62,8 +62,8 @@ services:
       - /bin/bash
       - -c
       - |
-        #open5gs-dbctl add_ue_with_apn 999991234567896 465B5CE8B199B49FAA5F0A2EE238A6BC E8ED289DEBA952E4283B54E88E6183CA internet
-        #open5gs-dbctl add_ue_with_apn ${UE1_IMSI} ${UE1_KI} ${UE1_OP} internet
+        #open5gs-dbctl add_ue_with_apn <IMSI> <Ki> <OP> internet
+        #open5gs-dbctl add_ue_with_apn <IMSI> <Ki> <OP> internet
         while IFS=, read -r imsi ki op; do echo "add imsi $$imsi $$ki:$$op"; open5gs-dbctl add_ue_with_slice $$imsi $$ki $$op internet 1 ffffff; done < /opt/open5gs/ue.list
         tail -f /dev/null
     environment:
@@ -356,6 +356,8 @@ services:
       - .deploy/docker/srslte:/mnt/srslte
     env_file:
       - .env
+      - path: .deploy/secrets/ue.env
+        required: false
     environment:
       - COMPONENT_NAME=enb_zmq
     expose:
@@ -381,6 +383,8 @@ services:
       - .deploy/docker/srslte:/mnt/srslte
     env_file:
       - .env
+      - path: .deploy/secrets/ue.env
+        required: false
     environment:
       - COMPONENT_NAME=ue_zmq
     expose:
@@ -426,12 +430,14 @@ services:
     depends_on:
       gnb:
         condition: service_healthy
+    env_file:
+      - .env
+      - path: .deploy/secrets/ue.env
+        required: false
     environment:
       - MCC=999
       - MNC=99
       - MSISDN=0000000001
-      - KEY=465B5CE8B199B49FAA5F0A2EE238A6BC
-      - OP=E8ED289DEBA952E4283B54E88E6183CA
       - OP_TYPE=OPC
       - APN=internet
       - SST=1

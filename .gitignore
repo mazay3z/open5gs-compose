@@ -11,3 +11,14 @@ PSMDB-ENCRYPTION-NOTES.md
 *.log
 
 .DS_Store
+
+# EKI-TK feature: operator secrets (never in git)
+.deploy/secrets/
+.deploy/docker/ue.list
+.deploy/docker/mongodb-tls/*.key
+.deploy/docker/mongodb-tls/*.csr
+.deploy/docker/mongodb-tls/server.pem
+.deploy/docker/mongodb-tls/ca.srl
+.deploy/docker/diameter/*/*.key
+.deploy/docker/diameter/*/*.csr
+__pycache__/

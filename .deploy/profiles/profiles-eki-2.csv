@@ -1,0 +1,6 @@
+# pLTE-in-BOX UICC profile load file (TK per KPXD practice, GSMA FS.28 "Acceptable").
+# Columns: IMSI,EKI,E_KI,AMF,HMAC
+# E_KI = AES-128-ECB(TK_EKI, Ki), 32 hex; HMAC = HMAC-SHA256(HK, "IMSI|EKI|E_KI|AMF");
+# HK = SHA256(TK_EKI || "pLTE-inBOX-EKI-MAC"). OPc is derived by the network at import.
+# See .deploy/profiles/README.md.
+999990000000102,2,f67a4a423d7bcd4e28dcd58715afd738,8000,3140d6fc2928e9349a623b83e2a4dee10912fa60e013a69e75a18d5ac4a6191b
