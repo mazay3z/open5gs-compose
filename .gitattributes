@@ -1,0 +1,3 @@
+# scripts must keep LF endings (shebangs break with CRLF on linux)
+*.sh text eol=lf
+*.py text eol=lf
