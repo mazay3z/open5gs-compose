@@ -3,20 +3,28 @@
 #   python3 .deploy/scripts/profile-mgmt.py edit .deploy/profiles/example-mgmt-edit.csv
 # Справочник полей: .deploy/profiles/README.md («Менеджер профилей»)
 #
+# Для разовых/точечных изменений удобнее KV-формат: example-mgmt-edit.kv
+# (только нужные поля, без выравнивания под 27 колонок).
+#
 # Правила:
 #   - первая не-комментарная строка — шапка (имена столбцов, не изменять);
 #   - пустая ячейка = текущее значение не менять;
-#   - apn/qos/arp/ambr_d/ambr_u/sst/sd — полная замена slice (сессии);
-#   - любая ошибка в строке прерывает весь файл (fail-closed), ничего не пишется;
-#   - перед изменением создаётся бэкап в .deploy/backups/ (откат: restore).
+#   - строки apn/qos/arp/ambr_d/ambr_u/ipv4/ipv6 = upsert ОДНОЙ сессии в
+#     slice (sst, sd); остальные сессии/slice не трогается;
+#   - несколько строк с одним IMSI сливаются (аддитивно);
+#   - очистка полей в CSV невозможна (пустая = не трогать) — KV или JSON;
+#   - любая ошибка в любой строке прерывает весь файл ДО записи (fail-closed);
+#   - бэкап только с флагом --backup (содержит ключи!).
 # =============================================================================
-imsi,msisdn,imeisv,mme_host,mme_realm,apn,apn_type,qos,arp,ambr_d,ambr_u,sst,sd,ue_ambr_d,ue_ambr_u,ue_ambr,access_restriction,nam,status,barring,tau,purge,security_k,security_opc,create
-# --- Пример 1: сессия APN (QoS 9 / ARP best-effort / AMBR 500M) + UE-AMBR 500M ---
-#000000000000001,,,,,internet,internet,9,best-effort,500M,500M,1,ffffff,,,500M,,,,,,,,,
-# --- Пример 2: MSISDN + ограничение доступа (WB eUTRAN not allowed) ---
-#000000000000002,799900000002,,,,,,,,,,,,,,,16,,,,,,,,
-# --- Пример 3: блокировка абонента (barring) + RAU/TAU таймер 15 ---
-#000000000000003,,,,,,,,,,,,,,,,,,barring,all ps barred,15,,,,
-# --- Пример 4: СОЗДАНИЕ абонента (create=yes) — обязательно с ключами;
+imsi,msisdn,imeisv,mme_host,mme_realm,apn,apn_type,qos,arp,ambr_d,ambr_u,ipv4,ipv6,sst,sd,ue_ambr_d,ue_ambr_u,ue_ambr,access_restriction,nam,status,barring,tau,purge,security_k,security_opc,create
+# --- Пример 1: сессия APN (QoS 9 / ARP best-effort / AMBR 500M) + статический IP + UE-AMBR 500M ---
+#000000000000001,,,,,internet,internet,9,best-effort,500M,500M,10.167.71.200,,,,1,ffffff,,,500M,,,,,,,,
+# --- Пример 2: ещё одна сессия (APN voip) тому же IMSI — аддитивно ---
+#000000000000001,,,,,voip,dedicated,5,,,,10.167.71.201,,,,1,201111,,,,,,,,,,,,
+# --- Пример 3: MSISDN + ограничение доступа (WB eUTRAN not allowed) ---
+#000000000000002,799900000002,,,,,,,,,,,,,,,,16,,,,,,,,
+# --- Пример 4: блокировка абонента (barring) + RAU/TAU таймер 15 ---
+#000000000000003,,,,,,,,,,,,,,,,,,,,,barring,all ps barred,15,,,,
+# --- Пример 5: СОЗДАНИЕ абонента (create=yes) — обязательно с ключами;
 #     для загрузки ключей предпочтителен EKI-TK-поток (import-profiles.sh) ---
-#000000000000004,,,,,,,,,,,,,,,,,,,,,,<32-hex Ki>,<32-hex OPc>,yes
+#000000000000004,,,,,,,,,,,,,,,,,,,,,,,,,,<32-hex Ki>,<32-hex OPc>,yes

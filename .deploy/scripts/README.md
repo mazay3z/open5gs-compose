@@ -134,35 +134,47 @@ bash .deploy/scripts/import-profiles.sh <profiles-file.csv>
 ```bash
 # просмотр
 python3 .deploy/scripts/profile-mgmt.py show <imsi>        # профиль; ключи маскируются
-python3 .deploy/scripts/profile-mgmt.py list               # таблица всех абонентов
+python3 .deploy/scripts/profile-mgmt.py list               # таблица (APN + статический IP)
 
 # создание / изменение / жизненный цикл
 python3 .deploy/scripts/profile-mgmt.py add <imsi> --security-k <32hex> --security-opc <32hex> [--параметры…]
 python3 .deploy/scripts/profile-mgmt.py update <imsi> [--параметры…]   # только указанные поля; создаёт не умеет
 python3 .deploy/scripts/profile-mgmt.py revoke <imsi> [--barring …]    # subscriber_status=1
 python3 .deploy/scripts/profile-mgmt.py purge  <imsi>                  # purge_flag=true
-python3 .deploy/scripts/profile-mgmt.py del    <imsi>                  # удалить (с бэкапом)
+python3 .deploy/scripts/profile-mgmt.py del    <imsi>                  # удалить
 python3 .deploy/scripts/profile-mgmt.py restore <backup> [imsi]        # вернуть из бэкапа
 
-# массовое (CSV с шапкой или JSON; пустое поле = не менять)
-python3 .deploy/scripts/profile-mgmt.py edit <file.csv|file.json> [--dry-run]
+# массовое: KV (строка "imsi=…, поле=…") / CSV с шапкой / JSON;
+# пустое поле = не менять, пустое ЗНАЧЕНИЕ в KV = очистить
+python3 .deploy/scripts/profile-mgmt.py edit <file> [--dry-run] [--backup]
 ```
+
+**Несколько APN и статический IP на каждый** (v2): строка с `apn=`
+(upsert по имени сессии в slice `sst/sd`) — в т.ч. несколько строк на один
+IMSI (сливаются аддитивно), `--ipv4`/`--ipv6` — статический адрес сессии
+(`session.ue.ipv4/ipv6`; IP обязан быть в пуле SMF `10.167.71.192/24` —
+`.deploy/docker/smf.yaml`, иначе N4/UPF его не возьмут). Лимиты open5gs:
+4 сессии на slice, 8 slice. JSON `sessions: [...]` — полная замена slice.
 
 Ключевые параметры `add`/`update` (все — в `--help`): `--msisdn` (E.212 BCD),
 `--imeisv`, `--mme-host/--mme-realm`, `--apn/--apn-type/--qos/--arp/
---ambr-d/--ambr-u/--sst/--sd` (замена slice), `--ue-ambr[-d/-u]`,
+--ambr-d/--ambr-u/--ipv4/--ipv6/--sst/--sd`, `--ue-ambr[-d/-u]`,
 `--access-restriction`, `--nam`, `--status`, `--barring`, `--tau`,
 `--purge`, `--security-k/--security-opc/--security-amf` (plaintext-ключи —
 с громким предупреждением; для ключей предпочтителен EKI-TK-поток).
 
-Валидные имена: `qos` — 1–9 (или `9,2,1`), `arp` — `best-effort|voice|…`
-(или `8,1,2`), `ambr` — `1G|500M`, `status` — `granted|barring`, `nam` —
-`packet|reserved|only-packet`, `access-restriction`/`barring` — битмаска
-или имена флагов. Числа пишутся BSON int32 (ридеры open5gs требуют INT32).
+Валидные имена: `qos` — 1–255 (или `9,2,1` — index,pri,cap), `arp` —
+`best-effort|voice|…` (или `8,1,2`), `ambr` — `1G|500M`, `status` —
+`granted|barring`, `nam` — `packet|reserved|only-packet`,
+`access-restriction`/`barring` — битмаска или имена флагов. Числа пишутся
+BSON int32 (ридеры open5gs требуют INT32); `pre_emption_capability` —
+только 1/2 (иначе UDR падает по assert при чтении SM context — валидатор
+отклоняет другие значения).
 
-Безопасность: перед каждым изменением — бэкап в `.deploy/backups/`
-(gitignored, `chmod 600`, **содержит ключи**); `--dry-run` показывает план
-без записи; неизвестные поля отклоняются (fail-closed).
+Безопасность: `edit` двухфазный — весь файл валидируется **до** первой
+записи, ошибка в любой строке = ничего не пишется (fail-closed); `--dry-run`
+= только фаза 1. Бэкап — **только с `--backup`** (файл в `.deploy/backups/`,
+gitignored, `chmod 600`, **содержит ключи**); неизвестные поля отклоняются.
 
 ## Деплой и сертификаты
 

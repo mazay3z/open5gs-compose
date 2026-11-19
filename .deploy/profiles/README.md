@@ -71,40 +71,87 @@ bash .deploy/scripts/import-profiles.sh <FILE>
 bash .deploy/scripts/tk-mgmt.sh revoke <n>     # бэкап TK в .deploy/secrets/revoked/ + удаление из KMS
 ```
 
-## Менеджер профилей (`.deploy/scripts/profile-mgmt.py`)
+## Менеджер профилей (`.deploy/scripts/profile-mgmt.py`, v2)
 
-Управление **всеми** параметрами абонента в AUC — одиночное и массовое
-(на базе open5gs-utils, extended): просмотр, создание, редактирование,
-отзыв, удаление, восстановление из бэкапа.
+Управление **всеми** параметрами абонента в AUC — одиночное и массовое:
+несколько APN на абонента (до 4 сессий на slice, до 8 slice — лимиты
+open5gs), **статический IP на каждый APN** (`session.ue.ipv4/ipv6`),
+просмотр, создание, отзыв, удаление, восстановление.
 
 ```bash
-# просмотр (ключи маскируются) / список
+# просмотр (ключи маскируются) / список (APN + статический IP)
 python3 .deploy/scripts/profile-mgmt.py show <imsi>
 python3 .deploy/scripts/profile-mgmt.py list
 
 # одиночное: создать (dbctl-база + доп. параметры)
 python3 .deploy/scripts/profile-mgmt.py add <imsi> --security-k <32hex> --security-opc <32hex> \
-    --msisdn 79991234567 --apn internet --qos 9 --arp best-effort --ambr-d 500M \
-    --access-restriction 32 --nam packet --status granted --tau 12
+    --apn internet --qos 9 --ambr-d 500M --ipv4 10.167.71.200
 #   (для загрузки КЛЮЧЕЙ через EKI-TK используйте import-profiles.sh)
 
-# одиночное: изменить (только указанные поля; создаёт не умеет)
-python3 .deploy/scripts/profile-mgmt.py update <imsi> --ue-ambr 500M --barring "all ps barred"
+# одиночное: изменить (только указанные поля; сессию upsert'ит по имени APN)
+python3 .deploy/scripts/profile-mgmt.py update <imsi> --apn voip --apn-type dedicated --qos 5
+python3 .deploy/scripts/profile-mgmt.py update <imsi> --apn internet --ipv4 ""   # снять статический IP
 python3 .deploy/scripts/profile-mgmt.py revoke <imsi>         # subscriber_status=1 (barring)
 python3 .deploy/scripts/profile-mgmt.py purge <imsi>          # purge_flag=true
-python3 .deploy/scripts/profile-mgmt.py del <imsi>            # удалить (с бэкапом)
+python3 .deploy/scripts/profile-mgmt.py del <imsi>
 python3 .deploy/scripts/profile-mgmt.py restore <backup> [imsi]
 
-# массовое: CSV (шапка + строки; пустая ячейка = не трогать) или JSON
-python3 .deploy/scripts/profile-mgmt.py edit <file.csv|file.json> [--dry-run]
+# массовое: KV / CSV / JSON (автоопределение), двухфазно
+python3 .deploy/scripts/profile-mgmt.py edit <file> [--dry-run] [--backup]
 ```
 
-CSV-шапка: `imsi,msisdn,imeisv,mme_host,mme_realm,apn,apn_type,qos,arp,ambr_d,ambr_u,sst,sd,ue_ambr_d,ue_ambr_u,ue_ambr,access_restriction,nam,status,barring,tau,purge,security_k,security_opc,create`.
-JSON — список объектов тех же полей + `sessions` (полная замена slice) и
-`security: {k, opc, amf}`. Имена флагов (`best-effort`, `voice`, `granted`,
-`all ps barred` и т.п.) — в `--help`. Числа записываются в BSON int32
-(ридеры open5gs требуют INT32), перед каждым изменением — бэкап в
-`.deploy/backups/` (gitignored, chmod 600 — содержит ключи, хранить как секрет).
+**Массовые форматы `edit` (автоопределение):**
+
+1. **KV (рекомендуемый)** — только нужные поля; строка = «пакет изменений»:
+
+   ```
+   # одна строка = одна пачка изменений; не указанное не трогается
+   imsi=999990000000101, apn=internet, qos=9, ambr_d=500M, ipv4=10.167.71.200
+   imsi=999990000000101, apn=voip, apn_type=dedicated, qos=5, sst=1, sd=201111
+   imsi=999990000000102, msisdn=79990000000102
+   imsi=999990000000102, ipv4=                # пустое значение = ОЧИСТИТЬ
+   ```
+
+   - Несколько строк с одним IMSI **сливаются** (аддитивно); позже
+     записанное поле побеждает.
+   - Строка с `apn=` (или `qos`/`arp`/`ambr_d`/`ambr_u`/`ipv4`/`ipv6`)
+     **upsert'ит одну сессию** в slice `(sst, sd)` (по умолчанию
+     `1/ffffff`): сессия с тем же именем обновляется, новая добавляется;
+     **остальные сессии и slice не трогается** (лимиты: 4 сессии/slice,
+     8 slice — open5gs `OGS_MAX_NUM_OF_SESS`/`OGS_MAX_NUM_OF_SLICE`).
+   - Значения с запятыми — в кавычках: `"arp=8,1,2"`.
+   - Очистка пустым значением: `msisdn`, `imeisv`, `mme_host`,
+     `mme_realm`, `ipv4`, `ipv6`.
+2. **CSV** — позиционная таблица (шапка обязательна, первая колонка
+   `imsi`), пустая ячейка = не трогать; повторяющиеся строки IMSI
+   сливаются так же, как в KV. Очистка полей в CSV невозможна — KV/JSON.
+3. **JSON** — список объектов тех же полей; `""` = очистить,
+   `null`/отсутствует = не трогать; явный `sessions: [...]` — **полная
+   замена slice** (не совместим с апсерт-строками в том же объекте);
+   объект сессии принимает `ipv4`/`ipv6`.
+
+`edit` **двухфазный**: фаза 1 — разбор и валидация всего файла
+(форматы, лимиты, симуляция слияния) **до первой записи**; любая ошибка
+прерывает файл целиком, в БД ничего не пишется. Фаза 2 — применение.
+`--dry-run` = только фаза 1.
+
+**Бэкап — по явному флагу `--backup`** (не по умолчанию): файл
+`.deploy/backups/profile-mgmt-<ts>.json` (gitignored, chmod 600)
+содержит **plaintext-ключи** — хранить как секрет, не выносить за
+доверенный хост. Без `--backup` откат — повторной прогрузкой прежних
+значений или из собственного дампа.
+
+Справочник полей (в т.ч. `sst`/`sd`, `qos` «index» или
+«index,pri,cap», `arp` по имени или «pri,cap,vuln», маски
+`access_restriction`/`barring` по именам флагов, `ipv4`
+`a.b.c.d[/32]`, `ipv6` `2001:db8::1[/128]`) — `profile-mgmt.py --help`
+и `.deploy/scripts/README.md`. Числа записываются в BSON int32
+(ридеры open5gs требуют INT32; `pre_emption_capability` — только 1/2,
+иначе UDR падает по assert при чтении SM context).
+
+Образцы (все строки данных закомментированы): `example-mgmt-edit.kv`
+(основной), `example-mgmt-edit.csv`, `example-load-file.csv`
+(для `import-profiles.sh`).
 
 
 ## Что можно коммитить
