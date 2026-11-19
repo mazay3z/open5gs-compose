@@ -1,9 +1,14 @@
 #!/bin/bash
-# Import UICC profiles from a load file (IMSI,EKI,E_KI,AMF[,HMAC]) into the open5gs AUC (MongoDB).
+# Import UICC profiles from a load file into the open5gs AUC (MongoDB).
+# Columns: IMSI,EKI,E_KI,E_OPC,AMF[,HMAC]  (new layout; E_OPC is optional)
+# Legacy files IMSI,EKI,E_KI,AMF[,HMAC] are still accepted (auto-detect: the
+# 4th column is E_OPC when it is 32 hex, AMF when it is 1-4 hex).
 #
-# Per row: TK fetched from the KMS by EKI -> (HMAC verified when the 5th column is
+# Per row: TK fetched from the KMS by EKI -> (HMAC verified when the last column is
 # present, or IMPORT_REQUIRE_HMAC=1) -> eKi decrypted to Ki ->
-# OPc derived as AES128(network OP, Ki) (3GPP TS 35.208 Annex C) -> subscriber
+# OPc taken from the file (E_OPC, decrypted with the same TK) or, when the
+# column is absent, derived in the network as AES128(network OP, Ki)
+# (3GPP TS 35.208 Annex C) with a per-row warning -> subscriber
 # created/updated in the 'subscribers' collection.
 #
 # Fail-closed: ANY error (unknown/revoked EKI, KMS down, HMAC mismatch when checked, malformed
@@ -86,7 +91,31 @@ abort() { echo "[row $row] FAIL: $1 - import ABORTED (fail-closed)" >&2; exit 1;
 while IFS= read -r line; do
   case "$line" in ''|\#*) continue;; esac
   row=$((row+1))
-  IFS=',' read -r IMSI EKI E_KI AMF HMAC _ <<<"$line"
+  IFS=',' read -r -a F <<<"$line"
+  NF=${#F[@]}
+  IMSI="${F[0]:-}"; EKI="${F[1]:-}"; E_KI="${F[2]:-}"
+  E_OPC=""; AMF=""; HMAC=""
+  # Column layout (disambiguated by count + length of column 4):
+  #   new:  IMSI,EKI,E_KI,E_OPC,AMF[,HMAC]        (E_OPC: 32 hex)
+  #   legacy: IMSI,EKI,E_KI,AMF[,HMAC]            (AMF: 1-4 hex)
+  case $NF in
+    3) : ;;
+    4) AMF="${F[3]}" ;;
+    5)
+      if echo "${F[3]}" | grep -Eq '^[0-9a-fA-F]{32}$'; then
+        E_OPC="${F[3]}"; AMF="${F[4]:-8000}"
+      elif [ -z "${F[3]}" ] || echo "${F[3]}" | grep -Eq '^[0-9a-fA-F]{1,4}$'; then
+        AMF="${F[3]}"; HMAC="${F[4]:-}"
+      else
+        abort "column 4 is neither E_OPC (32 hex) nor AMF (1-4 hex): '${F[3]}'"
+      fi ;;
+    6)
+      E_OPC="${F[3]}"; AMF="${F[4]:-}"; HMAC="${F[5]:-}" ;;
+    *) abort "unexpected column count $NF (expected 3-6)" ;;
+  esac
+  if [ -n "$E_OPC" ] && ! echo "$E_OPC" | grep -Eq '^[0-9a-fA-F]{32}$'; then
+    abort "E_OPC is not 32 hex"
+  fi
 
   echo "$IMSI" | grep -Eq '^[0-9]{14,15}$' || abort "bad IMSI '$IMSI'"
   _bao_check_eki "$EKI" || abort "bad EKI '$EKI'"
@@ -96,30 +125,44 @@ while IFS= read -r line; do
   # 1. TK by EKI (fail-closed on unknown/revoked EKI or KMS down)
   TK=$(_bao_get "$EKI") || abort "TK for EKI=$EKI not available (unknown/revoked EKI or KMS down)"
 
-  # 2. Integrity (optional - under review): a row MAY carry HMAC as the 5th column;
-  #    if present it is verified. IMPORT_REQUIRE_HMAC=1 makes the column mandatory.
+  # 2. Integrity (optional - under review): a row MAY carry HMAC as the last
+  #    column; if present it is verified over the columns actually in the row.
+  #    IMPORT_REQUIRE_HMAC=1 makes the column mandatory.
   if [ -n "$HMAC" ]; then
     HK=$(printf '%s' "${TK}pLTE-inBOX-EKI-MAC" | openssl dgst -sha256 -hex | awk '{print $NF}')
-    EXPECT=$(printf '%s' "${IMSI}|${EKI}|${E_KI}|${AMF}" | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$HK" | awk '{print $NF}')
+    if [ -n "$E_OPC" ]; then COVER="${IMSI}|${EKI}|${E_KI}|${E_OPC}|${AMF}"
+    else COVER="${IMSI}|${EKI}|${E_KI}|${AMF}"; fi
+    EXPECT=$(printf '%s' "$COVER" | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$HK" | awk '{print $NF}')
     [ "${HMAC,,}" = "${EXPECT,,}" ] || abort "HMAC mismatch (file corrupted, tampered, or wrong EKI/TK)"
   elif [ "${IMPORT_REQUIRE_HMAC:-0}" = "1" ]; then
     abort "HMAC missing (IMPORT_REQUIRE_HMAC=1)"
   fi
 
-  # 3. eKi -> Ki (AES-128-ECB decrypt)
+  # 3. eKi -> Ki (AES-128-ECB decrypt with the same TK)
   KI=$(printf '%s' "$E_KI" \
     | python3 -c 'import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))' \
     | openssl enc -d -nopad -aes-128-ecb -K "$TK" 2>/dev/null \
     | python3 -c 'import sys,binascii; print(binascii.hexlify(sys.stdin.buffer.read()).decode().strip())')
   echo "$KI" | grep -Eq '^[0-9a-fA-F]{32}$' || abort "decrypted Ki is invalid (wrong EKI/TK?)"
 
-  # 4. network OP from KMS -> OPc = AES128(OP, Ki) (MILENAGE OP function, TS 35.208 Annex C)
-  NETOP=$(_bao_netop) || abort "network OP not available in KMS (secret network/milenage-op)"
-  OPC=$(printf '%s' "$KI" \
-    | python3 -c 'import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))' \
-    | openssl enc -nopad -aes-128-ecb -K "$NETOP" \
-    | python3 -c 'import sys,binascii; print(binascii.hexlify(sys.stdin.buffer.read()).decode().strip())')
-  echo "$OPC" | grep -Eq '^[0-9a-fA-F]{32}$' || abort "OPc derivation failed"
+  # 4. OPc: preferred - from the file (E_OPC, provided by the KPXD, decrypted
+  #    with the same TK as Ki); fallback - derive in the network from the
+  #    network OP: OPc = AES128(OP, Ki) (MILENAGE, TS 35.208 Annex C).
+  if [ -n "$E_OPC" ]; then
+    OPC=$(printf '%s' "$E_OPC" \
+      | python3 -c 'import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))' \
+      | openssl enc -d -nopad -aes-128-ecb -K "$TK" 2>/dev/null \
+      | python3 -c 'import sys,binascii; print(binascii.hexlify(sys.stdin.buffer.read()).decode().strip())')
+    echo "$OPC" | grep -Eq '^[0-9a-fA-F]{32}$' || abort "decrypted OPc is invalid (bad E_OPC or wrong EKI/TK?)"
+  else
+    echo "warning [row $row]: E_OPC absent - OPc derived by the network (AES128(OP_net, Ki)); prefer the KPXD-provided E_OPC column" >&2
+    NETOP=$(_bao_netop) || abort "no E_OPC in the file and network OP not available in KMS (secret network/milenage-op)"
+    OPC=$(printf '%s' "$KI" \
+      | python3 -c 'import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))' \
+      | openssl enc -nopad -aes-128-ecb -K "$NETOP" \
+      | python3 -c 'import sys,binascii; print(binascii.hexlify(sys.stdin.buffer.read()).decode().strip())')
+    echo "$OPC" | grep -Eq '^[0-9a-fA-F]{32}$' || abort "OPc derivation failed"
+  fi
 
   # 5. Write to the AUC
   EXISTS=$(mongo_eval_stdin 'print(db.subscribers.findOne({imsi:"'$IMSI'"},{imsi:1}) ? "Y" : "N")')

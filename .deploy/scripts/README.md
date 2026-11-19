@@ -68,33 +68,39 @@ bash .deploy/scripts/tk-mgmt.sh revoke 9 && shred -u /tmp/test-eki-9.key
 Флаг `--show` печатает значение (только для проверки тестовой оснастки);
 существующий файл не перезаписывается.
 
-### `network-op-set.sh` — сетевой MILENAGE OP
+### `network-op-set.sh` — сетевой MILENAGE OP (fallback)
 
 ```bash
-bash .deploy/scripts/network-op-set.sh <32-hex OP>
+bash .deploy/scripts/network-op-set.sh <файл-с-OP>    # предпочтительно: файл с 32 hex
+bash .deploy/scripts/network-op-set.sh <32-hex OP>    # бэкомпат (значение видно в process list)
 ```
 
-Хранит OP сети в `secret/network/milenage-op`. Нужен импортёру для вывода
-`OPc = AES128(OP, Ki)` (TS 35.208 Annex C). Повторный запуск создаёт новую
-версию KV (старые OPc в AUC остаются валидными до повторного импорта
-затронутых абонентов).
+Хранит OP сети в `secret/network/milenage-op`. **Нужен только при загрузке
+файлов без столбца `E_OPC`** — для вывода `OPc = AES128(OP, Ki)`
+(TS 35.208 Annex C); при `E_OPC` в KMS OP не требуется. Значение не
+выводится. Повторный запуск создаёт новую версию KV (OPc, уже сохранённые в
+AUC, остаются валидными; новый OP влияет только на будущие выводы).
+Полная процедура — `EKI-TK-ENCRYPTION.md`, «Сетевой OP: импорт».
 
 ### `sim-kpdh.sh` — симулятор КПХД
 
-Генерирует строки загрузочного файла, где ключ зашифрован TK
-(`E_KI = AES-128-ECB(TK_EKI, Ki)`, 32 hex). Plaintext Ki в файл, git и логи
-не попадает.
+Генерирует строки загрузочного файла, где ключ(и) зашифрованы TK
+(`E_KI = AES-128-ECB(TK_EKI, Ki)`, опционально
+`E_OPC = AES-128-ECB(TK_EKI, OPc)` — тот же TK, 32 hex). Plaintext Ki/OPc в
+файл, git и логи не попадают.
 
 ```bash
-bash .deploy/scripts/sim-kpdh.sh --gen   <EKI> <IMSI> [--amf AMF] [--out FILE] [--hmac]
-bash .deploy/scripts/sim-kpdh.sh --rekey <EKI> <IMSI> --ki <32hex> [--amf AMF] [--out FILE] [--hmac]
+bash .deploy/scripts/sim-kpdh.sh --gen   <EKI> <IMSI> [--amf AMF] [--out FILE] [--hmac] [--opc <32hex>|--opc-derive]
+bash .deploy/scripts/sim-kpdh.sh --rekey <EKI> <IMSI> --ki <32hex> [--amf AMF] [--out FILE] [--hmac] [--opc <32hex>|--opc-derive]
 ```
 
 - `--gen` — Ki генерируется из `/dev/urandom` (эмуляция персонализации КПХД);
 - `--rekey` — перешифровка известных ключей (миграция plaintext-строки `ue.list`);
+- `--opc <32hex>` — OPc, предоставленный «КПХД» (в файл уходит `E_OPC`);
+- `--opc-derive` — OPc = AES128(OP_сети, Ki) из KMS (эмуляция КПХД, имеющего OP сети);
 - `--out` — файл дописывается (по умолчанию `.deploy/profiles/load.csv`);
-- `--hmac` — опциональный 5-й столбец HMAC (функционал под вопросом; по
-  умолчанию 4-колоночный файл).
+- `--hmac` — опциональный последний столбец HMAC (функционал под вопросом;
+  покрытие — по присутствующим столбцам).
 
 Fail-closed: KMS недоступен или EKI неизвестен — файл не пишется.
 
@@ -104,8 +110,14 @@ Fail-closed: KMS недоступен или EKI неизвестен — фай
 bash .deploy/scripts/import-profiles.sh <profiles-file.csv>
 ```
 
-Построчно: EKI → TK из KMS → (HMAC, если 5-й столбец есть или
-`IMPORT_REQUIRE_HMAC=1`) → eKi → Ki → OPc → запись в `subscribers`.
+Формат файла: `IMSI,EKI,E_KI,E_OPC,AMF[,HMAC]`; старые файлы
+`IMSI,EKI,E_KI,AMF[,HMAC]` принимаются без изменений (разбор — по числу
+столбцов и длине 4-го: 32 hex → `E_OPC`, 1–4 hex → `AMF`).
+
+Построчно: EKI → TK из KMS → (HMAC, если последний столбец есть или
+`IMPORT_REQUIRE_HMAC=1`) → eKi → Ki → OPc из `E_OPC` (тем же TK) либо, при
+отсутствии, вывод `AES128(OP_сети, Ki)` с предупреждением по строке → запись
+в `subscribers`.
 Любая ошибка прерывает импорт целиком (fail-closed, «тихо неверного
 состояния» не возникает); повторная прогрузка идемпотентна (replay-safe).
 Авто-детект TLS-оверлея до MongoDB (из конфига работающего mongod).

@@ -11,20 +11,26 @@
 
 ```
 # комментарии начинаются с '#'
-IMSI,EKI,E_KI,AMF[,HMAC]
-999990000000101,1,<32 hex>,8000
+IMSI,EKI,E_KI,E_OPC,AMF[,HMAC]
+999990000000101,1,<32 hex>,<32 hex>,8000
 ```
+
+Старый формат `IMSI,EKI,E_KI,AMF[,HMAC]` (без `E_OPC`) принимается без
+изменений: разбор — по числу столбцов и длине 4-го (32 hex → `E_OPC`,
+1–4 hex → `AMF`, иначе — ошибка).
 
 | Столбец | Значение |
 |---|---|
 | `IMSI` | 14–15 десятичных цифр |
 | `EKI` | Индекс/версия транспортного ключа (целое > 0). Сам TK лежит в OpenBao по пути `secret/transport-keys/eki-<EKI>` и **никогда** не попадает в этот файл. |
 | `E_KI` | `AES-128-ECB(TK_EKI, Ki)`, 32 hex. Ki — ровно 16 байт (без padding). |
+| `E_OPC` *(опционально)* | `AES-128-ECB(TK_EKI, OPc)`, 32 hex — **тот же TK**, что и для Ki (связка «EKI ↔ OPc»). OPc предоставляет КПХД (он записывает его на UICC). При наличии — импортёр сохраняет переданный OPc; при отсутствии — сеть выводит `OPc = AES128(OP, Ki)` (TS 35.208 Annex C) из OP сети в KMS и печатает предупреждение по строке. |
 | `AMF` | 5G-поле AMF, записывается в `security.amf` (по умолчанию `8000` — конвенция стека) |
-| `HMAC` *(опционально, функционал под вопросом)* | Если столбец присутствует (5-й), импортёр проверяет `HMAC-SHA256(HK, "IMSI/EKI/E_KI/AMF")` (64 hex, `HK = SHA256(TK_EKI + "pLTE-inBOX-EKI-MAC")`). Контроль целостности: сам ECB не аутентифицирован. Включение: `sim-kpdh.sh --hmac` (генерация), `IMPORT_REQUIRE_HMAC=1` (обязательный режим импортёра). |
+| `HMAC` *(опционально, функционал под вопросом)* | Если столбец присутствует (последний), импортёр проверяет `HMAC-SHA256(HK, "IMSI/EKI/E_KI[/E_OPC]/AMF")` по фактически присутствующим столбцам (64 hex, `HK = SHA256(TK_EKI + "pLTE-inBOX-EKI-MAC")`). Контроль целостности: сам ECB не аутентифицирован. Включение: `sim-kpdh.sh --hmac` (генерация), `IMPORT_REQUIRE_HMAC=1` (обязательный режим импортёра). |
 
-OPc в файл намеренно **не** включается: сеть выводит `OPc = AES128(OP, Ki)`
-из своего сетевого OP при импорте (3GPP TS 35.208 Annex C, MILENAGE).
+OPc в файл включается **опционально**, в зашифрованном виде (`E_OPC`): если
+КПХД не передаёт E_OPC, сеть выводит `OPc = AES128(OP, Ki)` из своего сетевого OP
+(3GPP TS 35.208 Annex C, MILENAGE) с предупреждением по строке.
 
 ### Соответствие с примером Ericsson AGSUI (JIRA PLTEBOX-137)
 
@@ -46,9 +52,10 @@ bash .deploy/scripts/tk-mgmt.sh import <n> <файл-ключа>
 #    (тестовый файл ключа для отработки потока: bash .deploy/scripts/gen-tk-file.sh <файл>)
 
 # 3) симулятор КПХД: сгенерировать строку файла профиля (новый случайный Ki)
-bash .deploy/scripts/sim-kpdh.sh --gen <n> <IMSI> [--amf AMF] [--out FILE] [--hmac]
+bash .deploy/scripts/sim-kpdh.sh --gen <n> <IMSI> [--amf AMF] [--out FILE] [--hmac] [--opc <32hex>|--opc-derive]
 #    либо перешифровать известные ключи (например, миграция plaintext-строки ue.list)
-bash .deploy/scripts/sim-kpdh.sh --rekey <n> <IMSI> --ki <32-hex> [--amf AMF] [--out FILE] [--hmac]
+bash .deploy/scripts/sim-kpdh.sh --rekey <n> <IMSI> --ki <32-hex> [--amf AMF] [--out FILE] [--hmac] [--opc <32hex>|--opc-derive]
+#    --opc — OPc от «КПХД» (в файл уходит E_OPC); --opc-derive — OPc = AES128(OP_сети, Ki) из KMS
 
 # 4) импорт в AUC (fail-closed, идемпотентно)
 bash .deploy/scripts/import-profiles.sh <FILE>

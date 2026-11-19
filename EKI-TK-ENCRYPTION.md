@@ -68,13 +68,20 @@
 OpenBao unseal (shamir 1/1 — см. §9)  + root token (оператор)
 └── KV v2
     ├── psmdb-encryption        KEK data-at-rest (DEK в RAM mongod)
-    ├── transport-keys/eki-N    TK (AES-128): шифруют Ki при провисининге (eKi)
-    │                            N = EKI: индекс/версия ключа в файле загрузки
-    └── network/milenage-op     OP сети (для вывода OPc)
-        └── eKi = AES128ECB(TK_N, Ki)   (на уровне файла)
-            └── Ki (на уровне абонента, в БД AUC)
-                └── AV (RAND/SRES/XRES) — штатный рантайм ядра
+    ├── transport-keys/eki-N    TK (AES-128): шифруют Ki и OPc при провисининге
+    │                            (eKi, eOPc); N = EKI: индекс/версия ключа
+    └── network/milenage-op     OP сети (FALLBACK: вывод OPc, когда в файле
+        │                        нет eOPc; при eOPc не обязателен)
+        ├── eKi  = AES128ECB(TK_N, Ki)   (на уровне файла)
+        ├── eOPc = AES128ECB(TK_N, OPc)  (на уровне файла, опционально)
+        └── Ki / OPc (на уровне абонента, в БД AUC)
+            └── AV (RAND/SRES/XRES) — штатный рантайм ядра
 ```
+
+- **Связка «EKI ↔ OPc»:** OPc, как и Ki, защищается тем же TK версии EKI
+  (столбец `E_OPC` файла). OPc — авторитетно **у КПХД** (он записывает его
+  на UICC), поэтому передача eOPc гарантирует согласованность AUC↔UICC
+  без хранения OP в сети.
 
 - **Выбор ключа по EKI:** строка файла несёт `EKI=N` → импортёр берёт TK с пути
   `secret/transport-keys/eki-N`. EKI — индекс, не значение ключа (ключ не
@@ -91,13 +98,21 @@ OpenBao unseal (shamir 1/1 — см. §9)  + root token (оператор)
 ## 4. Формат файла загрузки
 
 Спецификация и примеры — в `.deploy/profiles/README.md`. Кратко:
-`IMSI,EKI,E_KI,AMF[,HMAC]`, где `E_KI = AES-128-ECB(TK_EKI, Ki)` (32 hex);
-5-й столбец `HMAC` — **опционален (функционал под вопросом)**: по умолчанию не
-генерируется (`sim-kpdh.sh --hmac` — включить), импортёр проверяет его только при
-наличии; обязательный режим — `IMPORT_REQUIRE_HMAC=1`. Формула — `HMAC-SHA256(HK,`
-`IMSI|EKI|E_KI|AMF`)` с ключом `HK = SHA256(TK_EKI || "pLTE-inBOX-EKI-MAC")`.
-OPc в файл не включается — сеть выводит `OPc = AES128(OP, Ki)` (TS 35.208 Annex C)
-при импорте. Файлы с eKi **безопасно коммитятся** (plaintext-ключей не содержат).
+`IMSI,EKI,E_KI,E_OPC,AMF[,HMAC]`, где:
+- `E_KI = AES-128-ECB(TK_EKI, Ki)` (32 hex);
+- `E_OPC = AES-128-ECB(TK_EKI, OPc)` (32 hex) — **опционально**, тем же TK, что и
+  Ki («связка EKI ↔ OPc»). При наличии импортёр использует OPc из файла; при
+  отсутствии — выводит `OPc = AES128(OP_сети, Ki)` (TS 35.208 Annex C) из OP сети
+  в KMS и печатает предупреждение по строке;
+- `HMAC` — **опционален (функционал под вопросом)**: проверяется, если столбец
+  есть; обязательный режим — `IMPORT_REQUIRE_HMAC=1`. Формула по фактически
+  присутствующим столбцам: `HMAC-SHA256(HK, "IMSI|EKI|E_KI[|E_OPC]|AMF")`,
+  `HK = SHA256(TK_EKI || "pLTE-inBOX-EKI-MAC")`.
+
+**Совместимость:** файлы старого формата `IMSI,EKI,E_KI,AMF[,HMAC]` принимаются
+без изменений. Разбор: количество столбцов + длина 4-го (32 hex → `E_OPC`,
+1–4 hex → `AMF`, иначе — ошибка). Файлы **безопасно коммитятся**
+(plaintext-ключей не содержат).
 
 ## 5. Состав компонентов (только deployment-слой)
 
@@ -146,9 +161,16 @@ production: AES-GCM/HSM-алгоритмы — roadmap.
 мастер-ключ деривации. Совпадает с примером AGSUI из JIRA (поле `EKI=` в файле)
 и даёт версионирование/отзыв средствами KV v2.
 
-**D5. OPc выводится сетью** (`AES128(OP_сети, Ki)`, TS 35.208 Annex C) — как в
-реальном потоке («раскрытие eKi → Ki, расчёт OPC» на сетевом узле, контекст
-проекта Белый Раст в JIRA).
+**D5. Источник OPc.** В боевом потоке авторитетный источник OPc — **КПХД**
+(он записывает OPc на UICC; источник OP — договорная церемония). Поэтому
+принят **вариант A (бэкомпат)**: файл может нести `E_OPC` (OPc, зашифрованный
+тем же TK версии EKI, что и Ki — «связка EKI ↔ OPc»); при наличии импортёр
+хранит переданный OPc, при отсутствии — выводит `AES128(OP_сети, Ki)`
+(TS 35.208 Annex C) с предупреждением по строке. Последствия: (a)
+согласованность AUC↔UICC гарантирована конструктивно; (b) сетевой OP в KMS
+становится **необязательным** (только fallback для старых файлов и
+контрольный вектор); (c) отпадает риск рассогласования, если КПХД генерирует
+OPc своим OP-вариантом.
 
 ## 7. Процедуры (кратко)
 
@@ -156,15 +178,15 @@ production: AES-GCM/HSM-алгоритмы — roadmap.
 cd ~/open5gs-compose
 
 # Первичная настройка (один раз)
-bash .deploy/scripts/network-op-set.sh <OP_сети 32hex>     # OP = как у действующих абонентов, иначе OPc будут другие
+bash .deploy/scripts/network-op-set.sh <файл-с-OP>          # Fallback-OP сети (см. «Сетевой OP: импорт» ниже)
 bash .deploy/scripts/tk-mgmt.sh create 1                    # TK для EKI=1
 #   (или, если TK получен от поставщика профилей: bash .deploy/scripts/tk-mgmt.sh import 1 <файл-32hex>)
 bash .deploy/scripts/generate-mongodb-tls.sh                # TLS-сертификаты PSMDB (если overlay не включался)
 bash .deploy/scripts/generate-diameter-tls.sh               # (fresh deploy) TLS_Cred-файлы, которые freeDiameter читает при парсинге hss/mme/pcrf/smf
 # COMPOSE_FILE в .env содержит docker-compose.dbtls.yaml; docker compose up -d
 
-# Новый профиль (симуляция КПХД)
-bash .deploy/scripts/sim-kpdh.sh --gen 1 <IMSI>
+# Новый профиль (симуляция КПХД); --opc-derive — OPc как у КПХД, имеющего OP сети
+bash .deploy/scripts/sim-kpdh.sh --gen 1 <IMSI> --opc-derive
 bash .deploy/scripts/import-profiles.sh .deploy/profiles/profiles-eki-1.csv
 
 # Миграция plaintext-строки ue.list
@@ -180,6 +202,38 @@ bash .deploy/scripts/tk-mgmt.sh revoke 1        # бэкап TK в .deploy/secre
 # Проверка стека
 bash .deploy/scripts/verify-encrypted-stack.sh
 ```
+
+### Сетевой OP: импорт (как это работает и как прописывать)
+
+Сетевой OP (MILENAGE, 16 байт / 32 hex) в этой архитектуре — **fallback**:
+он нужен только (a) для вывода `OPc = AES128(OP, Ki)` при загрузке файлов
+**без** столбца `E_OPC` и (b) как контрольный вектор (если КПХД использует тот
+же OP, выведенный OPc обязан совпасть с переданным). Если КПХД передаёт
+`E_OPC` во всех файлах, OP в KMS не требуется.
+
+Где OP берётся: OP — ключ оператора; передаётся КПХД по договору (NDA) в
+рамках церемонии обмена ключами или выдаётся им же (КПХД может работать и
+без раскрытия OP — тогда используется его `E_OPC`).
+
+Прописка:
+
+```bash
+# 1) OP получен от выдающей стороны в защищённом виде (файл, 32 hex-символа)
+bash .deploy/scripts/network-op-set.sh /путь/к/файлу-с-OP
+#    (старый вариант: network-op-set.sh <32hex> — значение видно в process list,
+#     использовать только на тестовых развёртываниях)
+#    вывод: "network OP stored at secret/data/network/milenage-op (value never printed)."
+# 2) после импорта файл с OP удалить безопасно: shred -u /путь/к/файлу-с-OP
+# 3) контроль: bao kv metadata get secret/network/milenage-op  (версии; значение не смотреть)
+```
+
+Ротация OP: повторный вызов `network-op-set.sh` создаёт **новую версию KV**;
+OPc, уже сохранённые в AUC, остаются валидными (они выведены по старому OP);
+новый OP влияет только на будущие выводы (файлы без `E_OPC`) и на КПХД-поток —
+нужна синхронизация с выдающей стороной. Старые версии KV v2 сохраняются в
+KMS (восстановление — `bao kv get -version N`), что является остаточным
+риском: при смене OP на непересекающийся старая версия остаётся читаемой
+оператором KMS до ручного удаления версии.
 
 ## 8. Проверка на стенде (фактические результаты, 17.11.2026)
 
@@ -238,6 +292,23 @@ bash .deploy/scripts/verify-encrypted-stack.sh
   коммит-конфиги не менялись); ключи UE берутся из AUC именно того IMSI
   (ue.env — это UE1=999991234567896, не демо-абоненты); SQN-resync
   (Authentication Failure → повторный Auth Request) — штатное поведение.
+- **E_OPC в файле (20.11, вариант A из ADR D5):** формат
+  `IMSI,EKI,E_KI,E_OPC,AMF[,HMAC]` (E_OPC — 4-й столбец, тем же TK, что и Ki;
+  старые 4/5-колоночные файлы принимаются — разбор по числу столбцов и длине
+  4-го). Проверено:
+  - файл с E_OPC: импорт **без предупреждения**, в AUC сохранён именно
+    переданный OPC (сверка в БД, значения не выводились);
+  - legacy-файл: импорт с предупреждением по строке, OPC = AES128(OP_сети, Ki);
+  - legacy 5-колоночный (AMF+HMAC) и новый 6-колоночный (E_OPC+HMAC) — оба
+    импортированы, HMAC проверен по присутствующим столбцам;
+  - невалидный 4-й столбец (длина 10 hex) — fail-closed
+    (`column 4 is neither E_OPC (32 hex) nor AMF (1-4 hex)`);
+  - **E2E 5G-attach:** UE с OPC, переданным «КПХД» (≠ выведенному) —
+    `Initial Registration is successful`, `PDU Session … successful`; та же UE с
+    *выведенным* OPC — `Registration reject [111]` (Authentication failure):
+    AUC использует сохранённый OPc, а не выводит его.
+  - `network-op-set.sh`: импорт OP из файла (значение не в CLI, не выводится),
+    бэкомпат с аргументом-значением (с предупреждением).
 
 ## 9. Ограничения и остаточные риски (приняты)
 
@@ -256,9 +327,11 @@ bash .deploy/scripts/verify-encrypted-stack.sh
    зашифрован, сервер аутентифицирован, клиент — нет (внутри docker-сети).
 5. **OpenBao shamir 1/1**, root-token на диске, 27017/8200 опубликованы на хост —
    упрощения стенда; в production: 3/2, secret manager, firewall хоста.
-6. **OP сети в KMS в plaintext** (нужен для вывода OPc) — при утечке KMS
-   атакующий может выводить OPc из перехваченных eKi; риск принимается
-   (прототип), в production OP — в HSM-AuC.
+6. **OP сети в KMS (только fallback)** — нужен лишь для вывода OPc при файлах
+   без `E_OPC`; в КПХД-потоке с `E_OPC` OP в KMS не требуется (риск снимается).
+   Пока fallback активен: при утечке KMS атакующий может выводить OPc из
+   перехваченных eKi; в production OP — вне сетевого окружения (HSM-AuC/ключевой
+   центр), см. roadmap.
 7. **История git** содержит удалённые plaintext-ключи (`ue.list`, `.env`,
    diameter-ключи): очистка истории (force-push/BFG) — отдельное решение.
 8. S6a (Diameter) — `No_TLS`; SBI — plain HTTP: не требуются задачей, P2/форк.
