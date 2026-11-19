@@ -7,19 +7,20 @@
 #
 # File format (see .deploy/profiles/README.md):
 #   # comments / header
-#   IMSI,EKI,E_KI,AMF,HMAC
+#   IMSI,EKI,E_KI,AMF[,HMAC]             (HMAC is optional - under review)
 #   E_KI = AES-128-ECB(TK_EKI, Ki)            [32 hex; Ki is exactly 16 bytes, no padding]
-#   HMAC = HMAC-SHA256(HK, "IMSI|EKI|E_KI|AMF") [64 hex]
+#   HMAC = HMAC-SHA256(HK, "IMSI|EKI|E_KI|AMF") [64 hex, only with --hmac]
 #   HK   = SHA256(TK_EKI || "pLTE-inBOX-EKI-MAC")
 #
 # OPc is NOT part of the file: the network derives OPc = AES128(OP, Ki) from its
 # own network OP (3GPP TS 35.208 Annex C) at import time.
 #
 # Usage:
-#   sim-kpdh.sh --gen   <EKI> <IMSI> [--amf <AMF>] [--out <file>]
-#   sim-kpdh.sh --rekey <EKI> <IMSI> --ki <32hex> [--amf <AMF>] [--out <file>]
+#   sim-kpdh.sh --gen   <EKI> <IMSI> [--amf <AMF>] [--out <file>] [--hmac]
+#   sim-kpdh.sh --rekey <EKI> <IMSI> --ki <32hex> [--amf <AMF>] [--out <file>] [--hmac]
 #   --gen  : Ki generated from /dev/urandom - emulates KPXD personalization
 #   --rekey: re-encrypt known keys (e.g. migration of a plaintext ue.list row)
+#   --hmac : add the optional 5th HMAC column (default: 4-column file)
 #
 # Fail-closed: if the KMS is unavailable or the EKI is unknown, the file is NOT written.
 set -uo pipefail

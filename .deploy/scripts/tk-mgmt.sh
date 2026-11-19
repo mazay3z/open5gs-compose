@@ -6,6 +6,8 @@
 #   tk-mgmt.sh create <EKI>   # generate a new TK (AES-128, 32 hex) and store it in the KMS
 #   tk-mgmt.sh meta   <EKI>   # print KV metadata (versions only; never the key)
 #   tk-mgmt.sh revoke <EKI>   # back up the TK (gitignored dir) and delete it from the KMS
+#   tk-mgmt.sh import <EKI> <file-with-32hex>  # store an externally provided TK
+#                                              # (value never printed; existing EKI is not overwritten)
 #
 # create is idempotent: an existing EKI is NEVER regenerated (old profile files
 # would stop decrypting). The TK value is never printed.

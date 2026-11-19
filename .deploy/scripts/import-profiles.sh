@@ -1,11 +1,12 @@
 #!/bin/bash
-# Import UICC profiles from a load file (IMSI,EKI,E_KI,AMF,HMAC) into the open5gs AUC (MongoDB).
+# Import UICC profiles from a load file (IMSI,EKI,E_KI,AMF[,HMAC]) into the open5gs AUC (MongoDB).
 #
-# Per row: TK fetched from the KMS by EKI -> HMAC verified -> eKi decrypted to Ki ->
+# Per row: TK fetched from the KMS by EKI -> (HMAC verified when the 5th column is
+# present, or IMPORT_REQUIRE_HMAC=1) -> eKi decrypted to Ki ->
 # OPc derived as AES128(network OP, Ki) (3GPP TS 35.208 Annex C) -> subscriber
 # created/updated in the 'subscribers' collection.
 #
-# Fail-closed: ANY error (unknown/revoked EKI, KMS down, HMAC mismatch, malformed
+# Fail-closed: ANY error (unknown/revoked EKI, KMS down, HMAC mismatch when checked, malformed
 # eKi, bad DB write) aborts the import - no partial, silently-wrong state.
 # Replay-safe: re-importing the same file only updates existing records (idempotent).
 #

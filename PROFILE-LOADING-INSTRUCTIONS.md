@@ -134,7 +134,9 @@ docker compose exec -T mongodb mongo --tls --tlsCAFile /etc/mongodb-tls-ca/ca.cr
   127.0.0.1:27017/open5gs --quiet --eval 'print(db.subscribers.countDocuments({imsi:"999990000000200"}))'
 ```
 
-`1` — профиль на месте.
+`1` — профиль на месте. (Если TLS-оверлей до БД выключен — уберите `--tls`
+`--tlsCAFile …` из команды; режим авто-определяется `verify-encrypted-stack.sh`,
+секция 0.)
 
 ## 7. Если что-то пошло не так
 
@@ -234,6 +236,9 @@ python3 .deploy/scripts/profile-mgmt.py edit <файл.csv|json>  # массов
 bash .deploy/scripts/verify-encrypted-stack.sh              # состояние стенда (только чтение)
 bash .deploy/scripts/tk-mgmt.sh meta <EKI>                  # есть ли транспортный ключ
 bash .deploy/scripts/tk-mgmt.sh create <EKI>                # создать ключ
+bash .deploy/scripts/tk-mgmt.sh import <EKI> <файл-32hex>   # ключ от поставщика (КПХД)
 bash .deploy/scripts/sim-kpdh.sh --gen <EKI> <IMSI> --out .deploy/profiles/load.csv   # файл профиля
 bash .deploy/scripts/import-profiles.sh .deploy/profiles/load.csv                     # прогрузить
+python3 .deploy/scripts/profile-mgmt.py list                                          # кто есть кто
+python3 .deploy/scripts/profile-mgmt.py show <imsi>                                   # профиль (ключи скрыты)
 ```

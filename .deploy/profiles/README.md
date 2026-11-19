@@ -45,9 +45,9 @@ bash .deploy/scripts/tk-mgmt.sh create <n>
 bash .deploy/scripts/tk-mgmt.sh import <n> <файл-ключа>
 
 # 3) симулятор КПХД: сгенерировать строку файла профиля (новый случайный Ki)
-bash .deploy/scripts/sim-kpdh.sh --gen <n> <IMSI> [--amf AMF] [--out FILE]
+bash .deploy/scripts/sim-kpdh.sh --gen <n> <IMSI> [--amf AMF] [--out FILE] [--hmac]
 #    либо перешифровать известные ключи (например, миграция plaintext-строки ue.list)
-bash .deploy/scripts/sim-kpdh.sh --rekey <n> <IMSI> --ki <32-hex> [--amf AMF] [--out FILE]
+bash .deploy/scripts/sim-kpdh.sh --rekey <n> <IMSI> --ki <32-hex> [--amf AMF] [--out FILE] [--hmac]
 
 # 4) импорт в AUC (fail-closed, идемпотентно)
 bash .deploy/scripts/import-profiles.sh <FILE>
