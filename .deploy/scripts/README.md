@@ -55,6 +55,19 @@ bash .deploy/scripts/tk-mgmt.sh revoke <EKI>            # бэкап TK в .depl
 файлы профилей перестали бы расшифровываться). `revoke` — последний шаг
 ротации (сначала прогрузить файлы с новым EKI).
 
+### `gen-tk-file.sh` — генератор тестового файла TK
+
+Эмулирует «файл ключа от поставщика» для отработки боевого потока `import`:
+
+```bash
+bash .deploy/scripts/gen-tk-file.sh /tmp/test-eki-9.key          # 16 случайных байт, mode 600, значение не печатается
+bash .deploy/scripts/tk-mgmt.sh import 9 /tmp/test-eki-9.key     # далее штатный поток
+bash .deploy/scripts/tk-mgmt.sh revoke 9 && shred -u /tmp/test-eki-9.key
+```
+
+Флаг `--show` печатает значение (только для проверки тестовой оснастки);
+существующий файл не перезаписывается.
+
 ### `network-op-set.sh` — сетевой MILENAGE OP
 
 ```bash

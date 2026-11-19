@@ -42,7 +42,7 @@ meta)
     echo "EKI $eki: not present in the KMS (unknown or revoked)."
     exit 1
   fi
-  printf '%s' "$META" | python3 -c 'import sys,json; d=json.load(sys.stdin); d=d.get("data",d); print("EKI:", d.get("key","?")); print("current_version:", d.get("current_version")); print("created_time:", d.get("created_time"))'
+  printf '%s' "$META" | python3 -c 'import sys,json; d=json.load(sys.stdin); d=d.get("data",d); print("EKI:", sys.argv[1]); print("current_version:", d.get("current_version")); print("created_time:", d.get("created_time"))' "$eki"
   ;;
 import)
   # Import an externally provided TK (e.g. delivered by the profile supplier / KPXD).

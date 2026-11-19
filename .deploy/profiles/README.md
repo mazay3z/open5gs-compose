@@ -43,6 +43,7 @@ bash .deploy/scripts/network-op-set.sh <32-hex OP>
 bash .deploy/scripts/tk-mgmt.sh create <n>
 #    либо импортировать предоставленный поставщиком ключ (файл: 32 hex-символа)
 bash .deploy/scripts/tk-mgmt.sh import <n> <файл-ключа>
+#    (тестовый файл ключа для отработки потока: bash .deploy/scripts/gen-tk-file.sh <файл>)
 
 # 3) симулятор КПХД: сгенерировать строку файла профиля (новый случайный Ki)
 bash .deploy/scripts/sim-kpdh.sh --gen <n> <IMSI> [--amf AMF] [--out FILE] [--hmac]
