@@ -10,7 +10,6 @@
 # mode 600. The value is NEVER printed by default (tk-mgmt convention);
 # --show prints it - only for checking the test setup.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
 
 SHOW=0
 OUT=""

@@ -20,7 +20,16 @@ case "$cmd" in
   create|meta|revoke|import) : ;;
   *) echo "Usage: $0 {create|import|meta|revoke} <EKI> [key-file]" >&2; exit 2 ;;
 esac
-_bao_check_eki "$eki" || exit 2
+# import takes <EKI> AND <key-file>: a non-numeric second argument is almost
+# always a key file passed in the EKI slot - give a targeted hint first.
+if [ "$cmd" = "import" ] && ! [[ "$eki" =~ ^[0-9]+$ ]]; then
+  echo "hint: import needs the EKI number and the key file: $0 import <EKI> <key-file>" >&2
+  echo "      e.g.: $0 import 9 test-eki-9.key" >&2
+fi
+if ! _bao_check_eki "$eki"; then
+  echo "Usage: $0 {create|import|meta|revoke} <EKI> [key-file]  (EKI - positive integer)" >&2
+  exit 2
+fi
 _bao_precheck || exit 2
 
 case "$cmd" in
@@ -48,8 +57,13 @@ import)
   # Import an externally provided TK (e.g. delivered by the profile supplier / KPXD).
   # The key is read from a file (never typed on the command line, never printed).
   KEYFILE="${3:-}"
-  if [ -z "$KEYFILE" ] || [ ! -f "$KEYFILE" ]; then
+  if [ -z "$KEYFILE" ]; then
     echo "Usage: $0 import <EKI> <key-file>  (key-file: exactly 32 hex characters)" >&2
+    exit 2
+  fi
+  if [ ! -f "$KEYFILE" ]; then
+    echo "ERROR: key file not found: $KEYFILE" >&2
+    echo "       (this script cd's to the repo root - use an absolute path, or a path relative to ~/open5gs-compose)" >&2
     exit 2
   fi
   if _bao_exists "$eki"; then
