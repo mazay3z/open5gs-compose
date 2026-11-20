@@ -33,10 +33,14 @@ Bulk formats (auto-detected):
       imsi=999990000000102, msisdn=799900000002
       imsi=999990000000102, ipv4=                # empty value = clear
   Multiple lines with the same IMSI merge additively; later lines win.
-  A line with apn= (or qos/arp/ambr_d/ambr_u/ipv4/ipv6) upserts ONE session
-  in slice (sst, sd); other sessions/slices are not touched (open5gs limits:
-  4 sessions per slice, 8 slices).  Quoted values may contain commas:
-  "arp=8,1,2".
+  Session operations (one per line, applied in line order):
+    apn=<name> [...]       upsert ONE session in slice (sst, sd) - a session
+                           with the same name is updated, a new one added;
+                           other sessions/slices are not touched
+    rename_apn=<old>:<new> rename a session (all parameters kept)
+    del_apn=<name>         delete a session from slice (sst, sd)
+  open5gs limits: 4 sessions per slice, 8 slices.
+  Quoted values may contain commas: "arp=8,1,2".
   CSV: positional table, header row required (first column 'imsi'),
   empty cell = keep.  Repeated IMSI rows merge the same way as KV.
   (Clearing a field in CSV is not possible - use KV or JSON.)
@@ -477,7 +481,7 @@ SCALAR_FIELDS = ("msisdn", "imeisv", "mme_host", "mme_realm",
                  "tau", "purge", "security_k", "security_opc", "create")
 CLEARABLE = ("msisdn", "imeisv", "mme_host", "mme_realm", "ipv4", "ipv6")
 KNOWN_ROW_KEYS = set(SESSION_FIELDS) | set(SLICE_FIELDS) | set(SCALAR_FIELDS) \
-    | {"imsi", "security", "sessions", "ekiprofile"}
+    | {"imsi", "security", "sessions", "ekiprofile", "rename_apn", "del_apn"}
 
 
 class Ops:
@@ -487,14 +491,17 @@ class Ops:
         self.imsi = imsi
         self.src = src
         self.fields = OrderedDict()
-        self.specs = []         # [{apn..., sst, sd}] session upserts
+        self.sess_ops = []      # [(kind, payload)] in row order; kind in
+                                #   "upsert":  spec dict {apn,...,sst,sd}
+                                #   "rename":  (old, new, sst, sd)
+                                #   "delete":  (name, sst, sd)
         self.replace = None     # explicit slice list (JSON 'sessions')
         self.create = False
 
     def merge(self, other):
         for k, v in other.fields.items():
             self.fields[k] = v
-        self.specs.extend(other.specs)
+        self.sess_ops.extend(other.sess_ops)
         if other.replace is not None:
             self.replace = other.replace
         self.create = self.create or other.create
@@ -517,21 +524,42 @@ def ops_from_row(row, src):
     for k in SCALAR_FIELDS:
         if k in row and k != "create":
             ops.fields[k] = row[k]
-    has_sess = any(str(row.get(k, "") or "").strip() != ""
-                   for k in SESSION_FIELDS)
-    if has_sess:
+    has_upsert = any(str(row.get(k, "") or "").strip() != ""
+                     for k in SESSION_FIELDS)
+    has_rename = str(row.get("rename_apn", "") or "").strip() != ""
+    has_delete = str(row.get("del_apn", "") or "").strip() != ""
+    has_replace = row.get("sessions") is not None
+    if sum([has_upsert, has_rename, has_delete, has_replace]) > 1:
+        raise RowError("one session operation per row: apn= (upsert) / "
+                       "rename_apn= / del_apn= / sessions= (replace)")
+    if has_upsert:
         spec = OrderedDict()
         for k in SESSION_FIELDS:
             if k in row:
                 spec[k] = row[k]
         spec["sst"] = row.get("sst", 1)
         spec["sd"] = row.get("sd", "ffffff")
-        ops.specs.append(spec)
-    if row.get("sessions") is not None:
-        if has_sess:
-            raise RowError("'sessions' (slice replace) cannot be mixed "
-                           "with session fields (apn/qos/arp/ambr/ipv4/"
-                           "ipv6) in the same row")
+        ops.sess_ops.append(("upsert", spec))
+    elif has_rename:
+        val = str(row["rename_apn"]).strip()
+        if ":" not in val:
+            raise RowError("rename_apn: format <old>:<new> (got %r)" % val)
+        old, new = (x.strip() for x in val.split(":", 1))
+        if not old or not new:
+            raise RowError("rename_apn: <old> and <new> must be non-empty")
+        if old == new:
+            raise RowError("rename_apn: <old> equals <new>")
+        ops.sess_ops.append(("rename", (old, new,
+                                        parse_sst(row.get("sst", 1)),
+                                        norm_sd(row.get("sd", "ffffff")))))
+    elif has_delete:
+        name = str(row["del_apn"]).strip()
+        if not name:
+            raise RowError("del_apn: name must be non-empty")
+        ops.sess_ops.append(("delete", (name,
+                                        parse_sst(row.get("sst", 1)),
+                                        norm_sd(row.get("sd", "ffffff")))))
+    elif has_replace:
         ops.replace = build_slice_list(row["sessions"])
     if isinstance(row.get("security"), dict):
         ops.fields["security"] = row["security"]
@@ -597,52 +625,97 @@ def build_slice_list(sess):
         sl["session"] = [session_from_spec(x) for x in (ss.get("session") or [{}])]
         out.append(sl)
     return out
-def merge_sessions(current_slices, specs, replace=None):
-    """Apply session upserts (and/or an explicit slice replace) to the
-    current slice list -> new slice list. Raises RowError on limits."""
-    if replace is not None and specs:
-        raise RowError("mixing 'sessions' replace with session upserts "
+def _find_slice_idx(slices, sst, sd):
+    for i, sl in enumerate(slices):
+        if isinstance(sl, dict) \
+                and str(sl.get("sst", "1")) == str(sst) \
+                and str(sl.get("sd", "ffffff")) == sd:
+            return i
+    return None
+
+
+def _find_sess_idx(ses, name):
+    for i, x in enumerate(ses):
+        if isinstance(x, dict) and x.get("name") == name:
+            return i
+    return None
+
+
+def _sess_upsert(slices, spec):
+    sst = parse_sst(spec.get("sst", 1))
+    sd = norm_sd(spec.get("sd", "ffffff"))
+    name = str(spec.get("apn") or spec.get("name") or "internet").strip()
+    idx = _find_slice_idx(slices, sst, sd)
+    if idx is None:
+        if len(slices) >= MAX_SLICE:
+            raise RowError("max %d slices per subscriber (open5gs)"
+                           % MAX_SLICE)
+        first = not slices or (sst == 1 and sd == "ffffff")
+        slices.append(OrderedDict([("sst", sst), ("sd", sd),
+                                    ("default_indicator", bool(first)),
+                                    ("session", [])]))
+        idx = len(slices) - 1
+    sl = slices[idx]
+    if not isinstance(sl.get("session"), list):
+        sl["session"] = []
+    ses = sl["session"]
+    j = _find_sess_idx(ses, name)
+    if j is None:
+        if len(ses) >= MAX_SESS:
+            raise RowError("max %d sessions (APN) per slice (open5gs)"
+                           % MAX_SESS)
+        ses.append(session_from_spec(spec, existing=None))
+    else:
+        ses[j] = session_from_spec(spec, existing=ses[j])
+
+
+def _sess_rename(slices, args):
+    old, new, sst, sd = args
+    idx = _find_slice_idx(slices, sst, sd)
+    if idx is None:
+        raise RowError("rename %s->%s: slice (%s,%s) not found"
+                       % (old, new, sst, sd))
+    ses = slices[idx].get("session") or []
+    j = _find_sess_idx(ses, old)
+    if j is None:
+        raise RowError("rename: session '%s' not found in slice (%s,%s)"
+                       % (old, sst, sd))
+    if _find_sess_idx(ses, new) is not None:
+        raise RowError("rename: session '%s' already exists in slice" % new)
+    ses[j]["name"] = new
+
+
+def _sess_delete(slices, args):
+    name, sst, sd = args
+    idx = _find_slice_idx(slices, sst, sd)
+    if idx is None:
+        raise RowError("delete: slice (%s,%s) not found" % (sst, sd))
+    ses = slices[idx].get("session") or []
+    j = _find_sess_idx(ses, name)
+    if j is None:
+        raise RowError("delete: session '%s' not found in slice (%s,%s)"
+                       % (name, sst, sd))
+    del ses[j]
+
+
+def merge_sessions(current_slices, sess_ops, replace=None):
+    """Apply ordered session operations (upsert/rename/delete) and/or an
+    explicit slice replace to the current slice list -> new slice list.
+    Raises RowError on limits or a not-found rename/delete target."""
+    if replace is not None and sess_ops:
+        raise RowError("mixing 'sessions' replace with session operations "
                        "is not allowed for the same IMSI")
     slices = json.loads(json.dumps(replace if replace is not None
                                    else (current_slices or [])))
     if not isinstance(slices, list):
         raise RowError("slice: list expected")
-    for spec in specs:
-        sst = parse_sst(spec.get("sst", 1))
-        sd = norm_sd(spec.get("sd", "ffffff"))
-        name = str(spec.get("apn") or spec.get("name") or "internet").strip()
-        idx = None
-        for i, sl in enumerate(slices):
-            if isinstance(sl, dict) \
-                    and str(sl.get("sst", "1")) == str(sst) \
-                    and str(sl.get("sd", "ffffff")) == sd:
-                idx = i
-                break
-        if idx is None:
-            if len(slices) >= MAX_SLICE:
-                raise RowError("max %d slices per subscriber (open5gs)"
-                               % MAX_SLICE)
-            first = not slices or (sst == 1 and sd == "ffffff")
-            slices.append(OrderedDict([("sst", sst), ("sd", sd),
-                                        ("default_indicator", bool(first)),
-                                        ("session", [])]))
-            idx = len(slices) - 1
-        sl = slices[idx]
-        if not isinstance(sl.get("session"), list):
-            sl["session"] = []
-        ses = sl["session"]
-        j = None
-        for i, x in enumerate(ses):
-            if isinstance(x, dict) and x.get("name") == name:
-                j = i
-                break
-        if j is None:
-            if len(ses) >= MAX_SESS:
-                raise RowError("max %d sessions (APN) per slice (open5gs)"
-                               % MAX_SESS)
-            ses.append(session_from_spec(spec, existing=None))
-        else:
-            ses[j] = session_from_spec(spec, existing=ses[j])
+    for kind, payload in sess_ops:
+        if kind == "upsert":
+            _sess_upsert(slices, payload)
+        elif kind == "rename":
+            _sess_rename(slices, payload)
+        elif kind == "delete":
+            _sess_delete(slices, payload)
     return slices
 
 
@@ -695,7 +768,10 @@ def validate_plan(ops, current):
         elif k == "imeisv":
             if not re.fullmatch(r"[0-9a-fA-F]{8,16}", s.strip()):
                 raise RowError("imeisv: 8-16 hex expected (got %s)" % s)
-    for spec in ops.specs:
+    for kind, payload in ops.sess_ops:
+        if kind != "upsert":
+            continue      # rename/delete checked in ops_from_row + simulate
+        spec = payload
         parse_sst(spec.get("sst", 1))
         norm_sd(spec.get("sd", "ffffff"))
         if str(spec.get("qos") or "").strip():
@@ -720,8 +796,8 @@ def validate_plan(ops, current):
                 and re.fullmatch(r"[0-9a-fA-F]{32}", opc)):
             raise RowError("create requires security k+opc (32 hex each) "
                            "- for EKI-TK loading use import-profiles.sh")
-    # simulate the merge (slice/session limits)
-    merge_sessions((current or {}).get("slice"), ops.specs,
+    # simulate the merge (slice/session limits, rename/delete targets)
+    merge_sessions((current or {}).get("slice"), ops.sess_ops,
                    replace=ops.replace)
 def compute_set(ops, current):
     """Phase 2: change set + current doc -> ($set document, [notes])."""
@@ -741,9 +817,9 @@ def compute_set(ops, current):
     if "mme_realm" in f:
         setdoc["mme_realm"] = str(f["mme_realm"]).strip()
         notes.append("mme_realm")
-    if ops.replace is not None or ops.specs:
+    if ops.replace is not None or ops.sess_ops:
         setdoc["slice"] = merge_sessions((current or {}).get("slice"),
-                                         ops.specs, replace=ops.replace)
+                                         ops.sess_ops, replace=ops.replace)
         notes.append("slices=%d" % len(setdoc["slice"]))
     if f.get("ue_ambr") or f.get("ue_ambr_d") or f.get("ue_ambr_u"):
         d, u = f.get("ue_ambr_d"), f.get("ue_ambr_u")
@@ -906,7 +982,7 @@ def apply_plan(stack, ops, dry=False, backup=None):
             opc = str(sec.get("opc")
                       or ops.fields.get("security_opc") or "").strip()
             warn("plaintext Ki/OPc - prefer import-profiles.sh (EKI-TK)")
-            spec = ops.specs[0] if ops.specs else {}
+            spec = next((p for k, p in ops.sess_ops if k == "upsert"), {})
             name = str(spec.get("apn") or spec.get("name")
                        or "internet").strip()
             sst = parse_sst(spec.get("sst", 1))
@@ -981,10 +1057,11 @@ def cmd_edit(stack, path, dry, backup):
         print("phase 1 ok: %d row(s), %d imsi(s) - dry-run, nothing written"
               % (len(rows), len(plans)))
         for ops in plans.values():
-            print("dry-run: imsi=%s fields=%s sessions=%d%s" % (
+            kinds = ",".join(k for k, _ in ops.sess_ops) or "-"
+            print("dry-run: imsi=%s fields=%s sess-ops=[%s]%s" % (
                 ops.imsi,
                 ",".join(ops.fields.keys()) or "-",
-                len(ops.specs),
+                kinds,
                 ", replace slices" if ops.replace is not None else ""))
         return
     print("phase 1 ok: %d row(s), %d imsi(s) - applying"
@@ -1101,7 +1178,8 @@ def row_from_cli(args):
     row = {"imsi": args.imsi}
     for attr in ("msisdn", "imeisv", "mme_host", "mme_realm", "apn",
                  "apn_type", "qos", "arp", "ambr_d", "ambr_u", "ipv4",
-                 "ipv6", "ue_ambr_d", "ue_ambr_u", "ue_ambr",
+                 "ipv6", "rename_apn", "del_apn",
+                 "ue_ambr_d", "ue_ambr_u", "ue_ambr",
                  "access_restriction", "nam", "status", "barring", "tau",
                  "sst", "sd"):
         v = getattr(args, attr.replace("-", "_"), None)
@@ -1126,6 +1204,11 @@ def add_common(p):
     p.add_argument("--mme-realm", help="MME realm; '' clears")
     p.add_argument("--apn", help="APN name: upserts this session in slice "
                                  "(sst, sd); other sessions are kept")
+    p.add_argument("--rename-apn", metavar="OLD:NEW",
+                   help="rename a session (keeps all its parameters), e.g. "
+                        "internet:test4; slice = (sst, sd)")
+    p.add_argument("--del-apn", metavar="NAME",
+                   help="delete the session NAME from slice (sst, sd)")
     p.add_argument("--apn-type", help="internet/default/ims/... or 1-6")
     p.add_argument("--qos", help="5G QoS id: 8 or 8,1,2 (pri,cap)")
     p.add_argument("--arp", help="arp name (best-effort/voice/...) or "
@@ -1211,6 +1294,8 @@ examples:
     profile-mgmt.py update 999990000000101 --msisdn 79990000000101
     profile-mgmt.py update 999990000000101 --apn voip --apn-type dedicated --qos 5
     profile-mgmt.py update 999990000000101 --apn internet --ipv4 ""   # снять стат. IP
+    profile-mgmt.py update 999990000000101 --rename-apn internet:test4 # переименовать APN
+    profile-mgmt.py update 999990000000101 --del-apn voip              # удалить APN
     profile-mgmt.py revoke 999990000000101 --barring "all ps barred"  # заблокировать
     profile-mgmt.py purge 999990000000101
     profile-mgmt.py del 999990000000101
@@ -1240,13 +1325,17 @@ bulk file formats (auto-detected):
 edit is two-phase: the whole file is validated BEFORE the first write
 (any error -> nothing is written); --dry-run stops after validation.
 
-sessions: a line/flag with apn= (or qos/arp/ambr_d/ambr_u/ipv4/ipv6) upserts
-ONE session in slice (sst, sd) matched by APN name; other sessions/slices
-are not touched. open5gs limits: 4 sessions per slice, 8 slices. The static
-IP must be inside the SMF pool 10.167.71.192/24 (.deploy/docker/smf.yaml).
+session operations (one per line/flag, applied in line order):
+  apn=<name> [...]        upsert ONE session in slice (sst, sd) matched by
+                          APN name; other sessions/slices are not touched
+  rename_apn=<old>:<new>  rename a session, ALL its parameters are kept
+  del_apn=<name>          delete a session from slice (sst, sd)
+open5gs limits: 4 sessions per slice, 8 slices. The static IP must be inside
+the SMF pool 10.167.71.192/24 (.deploy/docker/smf.yaml). JSON sessions:[...]
+= explicit FULL slice replace (cannot be combined with the ops above).
 
 fields (add/update and bulk): msisdn, imeisv, mme_host, mme_realm,
-apn, apn_type (internet|default|optimized|ims|dedicated|emergency|1-6),
+apn, rename_apn (<old>:<new>), del_apn (<name>), apn_type (internet|default|optimized|ims|dedicated|emergency|1-6),
 qos (5QI 1-255 or "5QI,pri,cap"), arp (best-effort|voice|video|... or
 "pri,cap,vuln"), ambr_d/ambr_u (1G|500M), ipv4 (a.b.c.d[/32]),
 ipv6 (2001:db8::1[/128]), sst, sd (6 hex), ue_ambr[-d/-u],

@@ -91,6 +91,8 @@ python3 .deploy/scripts/profile-mgmt.py add <imsi> --security-k <32hex> --securi
 # одиночное: изменить (только указанные поля; сессию upsert'ит по имени APN)
 python3 .deploy/scripts/profile-mgmt.py update <imsi> --apn voip --apn-type dedicated --qos 5
 python3 .deploy/scripts/profile-mgmt.py update <imsi> --apn internet --ipv4 ""   # снять статический IP
+python3 .deploy/scripts/profile-mgmt.py update <imsi> --rename-apn internet:test4 # переименовать APN
+python3 .deploy/scripts/profile-mgmt.py update <imsi> --del-apn voip             # удалить APN
 python3 .deploy/scripts/profile-mgmt.py revoke <imsi>         # subscriber_status=1 (barring)
 python3 .deploy/scripts/profile-mgmt.py purge <imsi>          # purge_flag=true
 python3 .deploy/scripts/profile-mgmt.py del <imsi>
@@ -115,11 +117,13 @@ python3 .deploy/scripts/profile-mgmt.py edit <file> [--dry-run] [--backup]
 
    - Несколько строк с одним IMSI **сливаются** (аддитивно); позже
      записанное поле побеждает.
-   - Строка с `apn=` (или `qos`/`arp`/`ambr_d`/`ambr_u`/`ipv4`/`ipv6`)
-     **upsert'ит одну сессию** в slice `(sst, sd)` (по умолчанию
-     `1/ffffff`): сессия с тем же именем обновляется, новая добавляется;
-     **остальные сессии и slice не трогается** (лимиты: 4 сессии/slice,
-     8 slice — open5gs `OGS_MAX_NUM_OF_SESS`/`OGS_MAX_NUM_OF_SLICE`).
+   - Операции над сессиями (одна на строку, применяются в порядке строк):
+     `apn=…` (или `qos`/`arp`/`ambr_d`/`ambr_u`/`ipv4`/`ipv6`) — **upsert одной
+     сессии** в slice `(sst, sd)`: с тем же именем — обновить, новое имя —
+     добавить, остальные сессии/slice не трогается; `rename_apn=<old>:<new>` —
+     **переименовать** сессию (все параметры сохраняются); `del_apn=<name>` —
+     **удалить** сессию из slice. Лимиты: 4 сессии/slice, 8 slice
+     (open5gs `OGS_MAX_NUM_OF_SESS`/`OGS_MAX_NUM_OF_SLICE`).
    - Значения с запятыми — в кавычках: `"arp=8,1,2"`.
    - Очистка пустым значением: `msisdn`, `imeisv`, `mme_host`,
      `mme_realm`, `ipv4`, `ipv6`.

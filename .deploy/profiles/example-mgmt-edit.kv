@@ -31,6 +31,12 @@
 # --- Пример 4: снять статический IP (пустое значение = очистить) ---
 #imsi=000000000000001, apn=internet, ipv4=
 #
+# --- Пример 4b: переименовать APN (internet -> test4, параметры сохраняются) ---
+#imsi=000000000000001, rename_apn=internet:test4
+#
+# --- Пример 4c: удалить APN (voip) из slice (sst, sd) ---
+#imsi=000000000000001, del_apn=voip
+#
 # --- Пример 5: СОЗДАНИЕ абонента (create=yes) — обязательно с ключами;
 #     для загрузки ключей предпочтителен EKI-TK-поток (import-profiles.sh) ---
 #imsi=000000000000004, create=yes, security_k=<32-hex Ki>, security_opc=<32-hex OPc>

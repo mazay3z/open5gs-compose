@@ -139,6 +139,8 @@ python3 .deploy/scripts/profile-mgmt.py list               # таблица (APN
 # создание / изменение / жизненный цикл
 python3 .deploy/scripts/profile-mgmt.py add <imsi> --security-k <32hex> --security-opc <32hex> [--параметры…]
 python3 .deploy/scripts/profile-mgmt.py update <imsi> [--параметры…]   # только указанные поля; создаёт не умеет
+python3 .deploy/scripts/profile-mgmt.py update <imsi> --rename-apn internet:test4  # переименовать APN
+python3 .deploy/scripts/profile-mgmt.py update <imsi> --del-apn voip              # удалить APN
 python3 .deploy/scripts/profile-mgmt.py revoke <imsi> [--barring …]    # subscriber_status=1
 python3 .deploy/scripts/profile-mgmt.py purge  <imsi>                  # purge_flag=true
 python3 .deploy/scripts/profile-mgmt.py del    <imsi>                  # удалить
@@ -150,10 +152,12 @@ python3 .deploy/scripts/profile-mgmt.py restore <backup> [imsi]        # вер�
 python3 .deploy/scripts/profile-mgmt.py edit <file> [--dry-run] [--backup]
 ```
 
-**Несколько APN и статический IP на каждый** (v2): строка с `apn=`
-(upsert по имени сессии в slice `sst/sd`) — в т.ч. несколько строк на один
-IMSI (сливаются аддитивно), `--ipv4`/`--ipv6` — статический адрес сессии
-(`session.ue.ipv4/ipv6`; IP обязан быть в пуле SMF `10.167.71.192/24` —
+**Несколько APN и статический IP на каждый** (v2): операции над сессиями
+(одна на строку/флаг, применяются в порядке строк): `apn=` (upsert по имени
+в slice `sst/sd`; несколько строк на один IMSI сливаются аддитивно),
+`rename_apn=<old>:<new>` (переименовать, **все параметры сохраняются**),
+`del_apn=<name>` (удалить из slice), `--ipv4`/`--ipv6` — статический адрес
+сессии (`session.ue.ipv4/ipv6`; IP обязан быть в пуле SMF `10.167.71.192/24` —
 `.deploy/docker/smf.yaml`, иначе N4/UPF его не возьмут). Лимиты open5gs:
 4 сессии на slice, 8 slice. JSON `sessions: [...]` — полная замена slice.
 
