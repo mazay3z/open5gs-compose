@@ -31,9 +31,10 @@ if echo "$ARG" | grep -Eq '^[0-9a-fA-F]{32}$'; then
   OP="$ARG"
   echo "warning: OP passed on the command line - it is visible in the process list; prefer a key file" >&2
 elif [ -f "$ARG" ]; then
+  ARG="$(readlink -f "$ARG")"   # relative paths are wrt the caller's cwd (cd happens after)
   OP=$(tr -d '[:space:]' < "$ARG" | head -c 64)
 else
-  echo "ERROR: $ARG is neither 32 hex characters nor an existing file" >&2
+  echo "ERROR: $ARG is neither 32 hex characters nor an existing file (tried in your current directory)" >&2
   exit 2
 fi
 

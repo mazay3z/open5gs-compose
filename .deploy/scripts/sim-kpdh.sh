@@ -28,6 +28,7 @@
 #
 # Fail-closed: if the KMS is unavailable or the EKI is unknown, the file is NOT written.
 set -uo pipefail
+CALLER_CWD="$PWD"   # for relative --out paths (this script cd's to the repo root)
 cd "$(dirname "$0")/../.."
 source .deploy/scripts/lib-bao.sh
 
@@ -46,6 +47,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -z "$OPC" ] || [ "$OPC_DERIVE" = 0 ] || { echo "--opc and --opc-derive are mutually exclusive" >&2; exit 2; }
+if [ -n "$OUT" ]; then
+  case "$OUT" in /*) : ;; *) OUT="$CALLER_CWD/$OUT" ;; esac
+fi
 if [ -n "$OPC" ]; then
   echo "$OPC" | grep -Eq '^[0-9a-fA-F]{32}$' || { echo "ERROR: --opc must be 32 hex chars" >&2; exit 2; }
 fi

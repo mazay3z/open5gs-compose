@@ -32,10 +32,18 @@
 # host process list only for the duration of the write. Residual documented in
 # EKI-TK-ENCRYPTION.md (fully closed only by the core-fork roadmap item).
 set -uo pipefail
+# Resolve the profile file BEFORE cd'ing to the repo root: relative paths
+# are given with respect to the caller's current directory.
+ARG1="${1:-}"
+if [ -n "$ARG1" ] && [ ! -f "$ARG1" ]; then
+  echo "ERROR: file not found: $ARG1 (tried in your current directory; this script cd's to the repo root)" >&2
+  echo "hint: use an absolute path, e.g. $HOME/open5gs-compose/.deploy/profiles/<file>" >&2
+  exit 2
+fi
+FILE="$(readlink -f "$ARG1" 2>/dev/null || true)"
 cd "$(dirname "$0")/../.."
 source .deploy/scripts/lib-bao.sh
 
-FILE="${1:-}"
 if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
   echo "Usage: $0 <profiles-file.csv>" >&2; exit 2
 fi

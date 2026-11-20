@@ -12,6 +12,7 @@
 # create is idempotent: an existing EKI is NEVER regenerated (old profile files
 # would stop decrypting). The TK value is never printed.
 set -uo pipefail
+CALLER_CWD="$PWD"   # for relative key-file paths (this script cd's to the repo root)
 cd "$(dirname "$0")/../.."
 source .deploy/scripts/lib-bao.sh
 
@@ -57,6 +58,9 @@ import)
   # Import an externally provided TK (e.g. delivered by the profile supplier / KPXD).
   # The key is read from a file (never typed on the command line, never printed).
   KEYFILE="${3:-}"
+  if [ -n "$KEYFILE" ]; then
+    case "$KEYFILE" in /*) : ;; *) KEYFILE="$CALLER_CWD/$KEYFILE" ;; esac
+  fi
   if [ -z "$KEYFILE" ]; then
     echo "Usage: $0 import <EKI> <key-file>  (key-file: exactly 32 hex characters)" >&2
     exit 2
