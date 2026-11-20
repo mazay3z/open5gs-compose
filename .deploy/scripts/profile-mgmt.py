@@ -21,6 +21,7 @@ Usage (works from any cwd; the repo root is resolved from this file):
   python3 .deploy/scripts/profile-mgmt.py del    <imsi>
   python3 .deploy/scripts/profile-mgmt.py revoke <imsi> [--barring FLAGS]
   python3 .deploy/scripts/profile-mgmt.py purge  <imsi>
+  python3 .deploy/scripts/profile-mgmt.py delete-all [--dry-run] [--yes] [--backup]
   python3 .deploy/scripts/profile-mgmt.py restore <backup.json> [imsi]
 
 Bulk formats (auto-detected):
@@ -1157,12 +1158,122 @@ def add_common(p):
     p.add_argument("--backup", action="store_true",
                    help="write a pre-change backup (contains plaintext "
                         "keys - treat as a secret)")
+
+
+def cmd_delete_all(stack, dry, backup, yes):
+    """Wipe ALL subscribers + sessions (guarded: --dry-run, --yes, --backup)."""
+    subs = all_subs(stack)
+    sessions = int(stack.mongo_eval(
+        "db.sessions.countDocuments({})").strip() or "0")
+    print("delete-all: subscribers=%d sessions=%d" % (len(subs), sessions))
+    for d in subs[:40]:
+        print("  - %s" % d.get("imsi", "?"))
+    if len(subs) > 40:
+        print("  ... and %d more" % (len(subs) - 40))
+    print("collections to wipe: subscribers, sessions "
+          "(sas_*/accounts/other collections are NOT touched)")
+    if dry:
+        print("dry-run: nothing deleted")
+        return
+    if not yes:
+        die("refusing to delete without --yes (re-run with --yes to "
+            "confirm the wipe)")
+    if not subs and not sessions:
+        print("nothing to delete (subscribers=0 sessions=0)")
+        return
+    if backup:
+        for d in subs:
+            backup_doc(backup, d.get("imsi"), d, "delete-all")
+        print("backup written: %s (contains plaintext keys)" % backup)
+    out1 = stack.mongo_eval("db.subscribers.deleteMany({})")
+    out2 = stack.mongo_eval("db.sessions.deleteMany({})")
+    def _deleted(out):
+        m = re.search(r'deletedCount["\s:]+(\d+)', out)
+        return m.group(1) if m else "?"
+    left_s = stack.mongo_eval("db.subscribers.countDocuments({})").strip()
+    left_e = stack.mongo_eval("db.sessions.countDocuments({})").strip()
+    print("deleted: subscribers=%s sessions=%s (left: subscribers=%s "
+          "sessions=%s)" % (_deleted(out1), _deleted(out2), left_s, left_e))
+    print("NOTE: NF RAM contexts (AMF/SMF/UDM/HSS/MME) are NOT reset - to "
+          "apply fully, restart the core: docker compose restart amf smf "
+          "udm udr ausf hss mme")
+
+
 def main():
+    EPILOG = """
+examples:
+  show/list:
+    profile-mgmt.py show 999990000000101          # профиль (ключи маскируются)
+    profile-mgmt.py list                          # таблица: APN + статический IP
+  single subscriber:
+    profile-mgmt.py add 999990000000101 --security-k <32hex> --security-opc <32hex> \\
+        --apn internet --qos 9 --ipv4 10.167.71.200
+    profile-mgmt.py update 999990000000101 --msisdn 79990000000101
+    profile-mgmt.py update 999990000000101 --apn voip --apn-type dedicated --qos 5
+    profile-mgmt.py update 999990000000101 --apn internet --ipv4 ""   # снять стат. IP
+    profile-mgmt.py revoke 999990000000101 --barring "all ps barred"  # заблокировать
+    profile-mgmt.py purge 999990000000101
+    profile-mgmt.py del 999990000000101
+  bulk (KV file - only the fields that must change):
+    profile-mgmt.py edit profiles.kv --dry-run    # только валидация
+    profile-mgmt.py edit profiles.kv             # применение
+    profile-mgmt.py edit profiles.kv --backup    # бэкап перед изменением (с ключами!)
+  wipe (ALL subscribers + sessions):
+    profile-mgmt.py delete-all --dry-run         # что будет удалено
+    profile-mgmt.py delete-all --yes             # стереть subscribers+sessions
+    profile-mgmt.py delete-all --yes --backup    # сначала бэкап (с ключами!)
+  restore from a backup file:
+    profile-mgmt.py restore .deploy/backups/profile-mgmt-<ts>.json [imsi]
+
+bulk file formats (auto-detected):
+  KV (recommended): one line = one change packet:
+        imsi=999990000000101, apn=internet, qos=9, ambr_d=500M, ipv4=10.167.71.200
+    several lines with the same IMSI merge additively (later wins);
+    empty VALUE clears the field (msisdn, imeisv, mme_host, mme_realm,
+    ipv4, ipv6); values with commas in quotes: "arp=8,1,2"
+  CSV: header row (first column 'imsi') + rows; empty cell = keep;
+    clearing a field is not possible (use KV/JSON)
+  JSON: list of objects; "" clears, null/absent keeps;
+    "sessions":[...] = explicit FULL slice replace; session objects accept
+    "ipv4"/"ipv6"
+
+edit is two-phase: the whole file is validated BEFORE the first write
+(any error -> nothing is written); --dry-run stops after validation.
+
+sessions: a line/flag with apn= (or qos/arp/ambr_d/ambr_u/ipv4/ipv6) upserts
+ONE session in slice (sst, sd) matched by APN name; other sessions/slices
+are not touched. open5gs limits: 4 sessions per slice, 8 slices. The static
+IP must be inside the SMF pool 10.167.71.192/24 (.deploy/docker/smf.yaml).
+
+fields (add/update and bulk): msisdn, imeisv, mme_host, mme_realm,
+apn, apn_type (internet|default|optimized|ims|dedicated|emergency|1-6),
+qos (5QI 1-255 or "5QI,pri,cap"), arp (best-effort|voice|video|... or
+"pri,cap,vuln"), ambr_d/ambr_u (1G|500M), ipv4 (a.b.c.d[/32]),
+ipv6 (2001:db8::1[/128]), sst, sd (6 hex), ue_ambr[-d/-u],
+access_restriction, nam (packet|reserved|only-packet),
+status (granted|barring), barring, tau (minutes), purge,
+security_k/security_opc (32 hex - LOUD WARNING; for keys prefer
+import-profiles.sh EKI-TK), create.
+Mask fields accept a bitmask or comma-separated flag names
+(see --access-restriction / --barring help). Numbers are written as
+BSON int32 (required by open5gs readers); pre_emption_capability is
+validated to 1/2 (the UDR asserts on any other value).
+
+safety:
+  - show/list mask the security keys;
+  - --backup is opt-in: the backup file contains PLAINTEXT keys
+    (.deploy/backups/, chmod 600, gitignored) - treat as a secret;
+  - unknown fields are rejected (fail-closed);
+  - delete-all requires --yes and wipes subscribers+sessions only.
+
+full reference: .deploy/profiles/README.md
+"""
     ap = argparse.ArgumentParser(
-        description="open5gs subscriber profile manager (AuC)",
+        description="open5gs subscriber profile manager (AuC): ALL subscriber "
+                    "parameters, several APN + static IP per APN, single and "
+                    "bulk (KV/CSV/JSON) editing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Bulk formats: KV / CSV / JSON - see the module docstring "
-               "and .deploy/profiles/README.md")
+        epilog=EPILOG)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("show", help="show one profile (keys masked)")
     p.add_argument("imsi")
@@ -1202,6 +1313,16 @@ def main():
     p.add_argument("--backup", action="store_true",
                    help="write a pre-change backup (contains plaintext "
                         "keys - treat as a secret)")
+    p = sub.add_parser("delete-all",
+                       help="wipe ALL subscribers + sessions (guarded: "
+                            "--yes required)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="list what would be deleted, write nothing")
+    p.add_argument("--yes", action="store_true",
+                   help="CONFIRM the wipe (required to delete)")
+    p.add_argument("--backup", action="store_true",
+                   help="write a full pre-delete backup (contains plaintext "
+                        "keys - treat as a secret)")
     p = sub.add_parser("restore", help="restore from a profile-mgmt "
                                        "backup file")
     p.add_argument("backup")
@@ -1212,7 +1333,7 @@ def main():
     stack = Stack().detect()
     dry = getattr(args, "dry_run", False)
     backup = backup_file() if (getattr(args, "backup", False) and not dry
-                               and args.cmd not in ("show", "list")) else None
+                               and args.cmd not in ("show", "list", "restore")) else None
     if args.cmd == "show":
         cmd_show(stack, args.imsi)
     elif args.cmd == "list":
@@ -1230,6 +1351,8 @@ def main():
         cmd_revoke(stack, args.imsi, args.barring, dry, backup)
     elif args.cmd == "purge":
         cmd_purge(stack, args.imsi, dry, backup)
+    elif args.cmd == "delete-all":
+        cmd_delete_all(stack, dry, backup, args.yes)
     elif args.cmd == "restore":
         restore(stack, args.backup, args.imsi, dry)
     if backup and not dry:

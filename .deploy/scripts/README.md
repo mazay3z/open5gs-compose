@@ -142,6 +142,7 @@ python3 .deploy/scripts/profile-mgmt.py update <imsi> [--параметры…] 
 python3 .deploy/scripts/profile-mgmt.py revoke <imsi> [--barring …]    # subscriber_status=1
 python3 .deploy/scripts/profile-mgmt.py purge  <imsi>                  # purge_flag=true
 python3 .deploy/scripts/profile-mgmt.py del    <imsi>                  # удалить
+python3 .deploy/scripts/profile-mgmt.py delete-all [--dry-run] [--yes] [--backup]  # стереть ВСЕХ (subscribers+sessions)
 python3 .deploy/scripts/profile-mgmt.py restore <backup> [imsi]        # вернуть из бэкапа
 
 # массовое: KV (строка "imsi=…, поле=…") / CSV с шапкой / JSON;
@@ -175,6 +176,12 @@ BSON int32 (ридеры open5gs требуют INT32); `pre_emption_capability`
 записи, ошибка в любой строке = ничего не пишется (fail-closed); `--dry-run`
 = только фаза 1. Бэкап — **только с `--backup`** (файл в `.deploy/backups/`,
 gitignored, `chmod 600`, **содержит ключи**); неизвестные поля отклоняются.
+`delete-all` (массовое удаление всех абонентов + сессий) защищено тройным
+барьером: без `--yes` — отказ; `--dry-run` — только перечисление; `--backup`
+— полный бэкап перед стиранием (откат: `restore`). Чистятся ровно
+`subscribers` + `sessions`; контекст в RAM ядра (AMF/SMF/UDM/HSS/MME)
+сбрасывается отдельным `docker compose restart` (подсказка в выводе).
+Подробная справка — `profile-mgmt.py -h`.
 
 ## Деплой и сертификаты
 

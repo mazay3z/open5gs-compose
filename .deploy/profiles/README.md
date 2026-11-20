@@ -94,6 +94,7 @@ python3 .deploy/scripts/profile-mgmt.py update <imsi> --apn internet --ipv4 ""  
 python3 .deploy/scripts/profile-mgmt.py revoke <imsi>         # subscriber_status=1 (barring)
 python3 .deploy/scripts/profile-mgmt.py purge <imsi>          # purge_flag=true
 python3 .deploy/scripts/profile-mgmt.py del <imsi>
+python3 .deploy/scripts/profile-mgmt.py delete-all [--dry-run] [--yes] [--backup]  # стереть ВСЕХ
 python3 .deploy/scripts/profile-mgmt.py restore <backup> [imsi]
 
 # массовое: KV / CSV / JSON (автоопределение), двухфазно
